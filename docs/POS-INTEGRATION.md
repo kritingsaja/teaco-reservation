@@ -4,6 +4,8 @@ Tujuan integrasi ini adalah membuat **draft order** di aplikasi kasir setelah me
 
 ## Trigger yang direkomendasikan
 
+Tamu memilih menu setelah DP disetujui admin, melalui akses kode reservasi + nomor HP. Bukti yang baru diunggah (`PENDING_VERIFICATION`) belum membuka pilihan menu. `GET/POST /api/holds/:id/menu` memerlukan token kepemilikan reservasi; perubahan tamu ditutup pukul 07.00 WIB hari kunjungan. Admin tetap dapat melakukan koreksi manual melalui endpoint admin yang terlindungi login.
+
 1. Reservasi berubah ke `MENU_SELECTED`.
 2. Sistem reservasi mengirim payload ke endpoint adaptor kasir.
 3. Adaptor melakukan mapping menu TEACO ke `product_id` kasir dan membuat/menyegarkan draft dengan `external_reference = reservation_code`.

@@ -59,6 +59,8 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await call('admin/settings',{method:'PATCH',admin:true,data:{bank_name:'BANK TEST',account_number:'123456789',account_holder:'TEST ONLY'}})).status,200);
     assert.equal((await call(path,{method:'POST',data:{...payment,proof:{name:'evil.svg',data:Buffer.from('<svg><script>alert(1)</script></svg>').toString('base64')}},token:first.token})).status,400);
     const paid=await call(path,{method:'POST',data:payment,token:first.token});assert.equal(paid.status,200);assert.equal(paid.body.reservation.status,'PENDING_VERIFICATION');
+    assert.equal((await call(`holds/${first.reservation.id}/menu`,{token:first.token})).status,409);
+    assert.equal((await call(`holds/${first.reservation.id}/menu`,{method:'POST',token:first.token,data:{items:[{productId:'invented',quantity:4}]}})).status,409);
     const dashboard=(await call('admin/dashboard',{admin:true})).body;assert.equal(dashboard.reservations.length,1);paymentId=dashboard.reservations[0].payment.id;assert.equal(JSON.stringify(dashboard).includes('proof_base64'),false);
     assert.equal((await call('admin/proofs/'+paymentId)).status,401);
     const proof=await call('admin/proofs/'+paymentId,{admin:true});assert.equal(proof.status,200);assert.equal(proof.headers.get('content-type'),'image/png');assert.ok(proof.body.byteLength>0);
@@ -73,8 +75,52 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await call('admin/menu/sync',{method:'POST',admin:true,data:{}})).status,503);
     const day=(await call('public')).body.days[1];assert.equal(day.booked,4);assert.equal(day.remaining,61);assert.equal(day.held,0);
     const lookup=await call('reservations/lookup',{method:'POST',data:{code:first.reservation.code,phone:'081234567890'}});assert.equal(lookup.status,200);assert.equal(lookup.body.reservation.status,'CONFIRMED');assert.equal(lookup.body.seats[0].name,'Meja 12');
+    first.token=lookup.body.token;
     assert.equal((await call('reservations/lookup',{method:'POST',data:{code:first.reservation.code,phone:'081299999999'}})).status,404);
     const publicData=JSON.stringify((await call('public')).body);assert.equal(publicData.includes('Test Pemesan'),false);assert.equal(publicData.includes('081234567890'),false);
+  });
+  await t.test('confirmed guest chooses real cashier menus, edits persist and draft uses source IDs',async()=>{
+    const requests=[];let unavailable=false;
+    const cashier=createServer(async(req,res)=>{
+      res.setHeader('Content-Type','application/json');
+      if(req.url==='/menu'){res.end(JSON.stringify({products:[{id:'pos-nasi',name:'Menu pengujian',category:'Makanan',price:20000}]}));return;}
+      let raw='';for await(const chunk of req)raw+=chunk;
+      requests.push({key:req.headers['idempotency-key'],body:JSON.parse(raw)});
+      if(unavailable){res.statusCode=503;res.end('{}');return;}
+      res.end(JSON.stringify({draft_id:'isolated-draft'}));
+    });
+    await new Promise(resolve=>cashier.listen(0,'127.0.0.1',resolve));
+    const url=`http://127.0.0.1:${cashier.address().port}`;
+    process.env.POS_MENU_URL=url+'/menu';process.env.POS_DRAFT_URL=url+'/draft';
+    try{
+      assert.equal((await call('admin/menu/sync',{method:'POST',admin:true,data:{}})).status,200);
+      const path=`holds/${first.reservation.id}/menu`;
+      assert.equal((await call(path)).status,403);
+      const menu=(await call(path,{token:first.token})).body;
+      assert.equal(menu.editable,true);assert.equal(menu.products.length,1);assert.equal(menu.items.length,0);assert.equal(menu.deadline,'2027-02-09T07:00:00+07:00');
+      const id=menu.products[0].id;
+      assert.equal((await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:0}]}})).status,400);
+      assert.equal((await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:2},{productId:id,quantity:2}]}})).status,400);
+      const save=await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:4,note:'Tanpa pedas'}]}});
+      assert.equal(save.status,200);assert.equal(save.body.synced,true);
+      let saved=(await call(path,{token:first.token})).body;
+      assert.equal(saved.reservation.status,'MENU_SELECTED');assert.equal(saved.items[0].quantity,4);assert.equal(saved.items[0].note,'Tanpa pedas');assert.equal(saved.pos.status,'SYNCED');
+      assert.equal(requests[0].body.items[0].product_id,'pos-nasi');assert.equal(requests[0].key,first.reservation.code);
+      const edited=await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:3,note:'Less sugar'}]}});assert.equal(edited.status,200);
+      assert.equal(requests[1].key,requests[0].key);
+      saved=(await call(path,{token:first.token})).body;assert.equal(saved.items.length,1);assert.equal(saved.items[0].quantity,3);
+      const dashboard=(await call('admin/dashboard',{admin:true})).body;assert.equal(dashboard.reservations[0].items[0].quantity,3);
+      unavailable=true;
+      const failed=await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:4}]}});assert.equal(failed.body.saved,true);assert.equal(failed.body.synced,false);
+      assert.equal((await call(path,{token:first.token})).body.pos.status,'FAILED');
+      const realNow=Date.now;
+      try{
+        Date.now=()=>Date.parse('2027-02-09T07:00:00+07:00');
+        assert.equal((await call(path,{token:first.token})).body.editable,false);
+        assert.equal((await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:2}]}})).status,409);
+        assert.equal((await call(path,{token:first.token})).body.items[0].quantity,4);
+      }finally{Date.now=realNow;}
+    }finally{delete process.env.POS_MENU_URL;delete process.env.POS_DRAFT_URL;await new Promise(resolve=>cashier.close(resolve));}
   });
   await t.test('logout invalidates the server session',async()=>{
     assert.equal((await call('auth/logout',{method:'POST',admin:true,data:{}})).status,200);

@@ -45,7 +45,49 @@ async function unitsFor(db,date,exclude='') {
       WHERE s.unit_id=u.id AND r.visit_date=$1 AND r.id<>$2 AND r.status IN (${activeSql})) AS occupied
     FROM seating_units u JOIN zones z ON z.id=u.zone_id ORDER BY z.sort_order,u.sort_order`,[date,exclude]);
 }
-async function audit(tx,admin,id,action) {await tx.query('INSERT INTO audit_log VALUES ($1,$2,$3,$4,$5)',[randomUUID(),admin.id,id,action,now()]);}
+async function audit(tx,admin,id,action) {await tx.query('INSERT INTO audit_log VALUES ($1,$2,$3,$4,$5)',[randomUUID(),admin?.id||null,id,action,now()]);}
+const menuDeadline=r=>r.visit_date+'T07:00:00+07:00';
+function requireConfirmed(r) {
+  if(!['CONFIRMED','MENU_SELECTED'].includes(r.status))fail('Menu baru dapat dipilih setelah DP disetujui admin.',409);
+}
+async function menuFor(db,r) {
+  requireConfirmed(r);
+  const deadline=menuDeadline(r);
+  return {reservation:publicReservation(r),deadline,editable:Date.parse(deadline)>Date.now(),
+    products:await db.query('SELECT id,name,category,price FROM menu_products WHERE active=1 ORDER BY category,name'),
+    items:await db.query('SELECT i.product_id,i.quantity,i.note,p.name,p.active FROM reservation_menu_items i JOIN menu_products p ON p.id=i.product_id WHERE i.reservation_id=$1',[r.id]),
+    pos:(await db.query('SELECT status,draft_id FROM pos_drafts WHERE reservation_id=$1',[r.id]))[0]||null};
+}
+async function saveMenu(db,id,data,{req,admin}={}) {
+  const payload=await db.transaction(async tx=>{
+    const initial=req?await owns(tx,id,req):(await tx.query('SELECT * FROM reservations WHERE id=$1',[id]))[0];
+    if(!initial)fail('Reservasi tidak ditemukan.',404);
+    await lockDay(tx,initial.visit_date);
+    const r=req?await owns(tx,id,req):(await tx.query('SELECT * FROM reservations WHERE id=$1',[id]))[0];
+    requireConfirmed(r);
+    if(req&&Date.now()>=Date.parse(menuDeadline(r)))fail('Batas pemilihan menu sudah lewat (07.00 WIB hari kunjungan). Hubungi admin.',409);
+    if(!Array.isArray(data.items)||!data.items.length||data.items.length>100)fail('Pilih minimal satu menu.');
+    const products=await tx.query('SELECT * FROM menu_products WHERE active=1');
+    const items=data.items.map(item=>{if(!item||typeof item!=='object')fail('Menu atau jumlah tidak valid.');const p=products.find(p=>p.id===item.productId);const qty=Number(item.quantity);if(!p||!Number.isInteger(qty)||qty<1||qty>100)fail('Menu atau jumlah tidak valid.');return {product_id:p.external_id,menu_code:p.external_id,quantity:qty,note:clean(item.note,300),id:p.id};});
+    if(new Set(items.map(i=>i.id)).size!==items.length)fail('Menu duplikat. Gabungkan jumlahnya.');
+    await tx.query('DELETE FROM reservation_menu_items WHERE reservation_id=$1',[id]);
+    for(const i of items)await tx.query('INSERT INTO reservation_menu_items VALUES ($1,$2,$3,$4,$5)',[randomUUID(),id,i.id,i.quantity,i.note]);
+    await tx.query("UPDATE reservations SET status='MENU_SELECTED' WHERE id=$1",[id]);
+    await tx.query('INSERT INTO pos_drafts(reservation_id,external_reference,status,updated_at) VALUES ($1,$2,$3,$4) ON CONFLICT(reservation_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at',[id,r.code,process.env.POS_DRAFT_URL?'PENDING':'NOT_CONFIGURED',now()]);
+    await audit(tx,admin,id,req?'GUEST_MENU_SAVED':'ADMIN_MENU_FINALIZED');
+    return {external_reference:r.code,visit_date:r.visit_date,customer:{name:r.customer_name,phone:r.phone},party_size:r.guest_count,seating:await seatsFor(tx,id),items:items.map(({id,...item})=>item),source_status:'MENU_SELECTED'};
+  });
+  if(!process.env.POS_DRAFT_URL)return {saved:true,synced:false,message:'Menu tersimpan. Koneksi draft kasir belum tersedia.'};
+  try {
+    const result=await cashierFetch(process.env.POS_DRAFT_URL,{method:'POST',headers:{'Idempotency-Key':payload.external_reference},body:JSON.stringify(payload)});
+    const draftId=clean(String(result.draft_id||result.id||''),150);if(!draftId)fail('Kasir tidak mengembalikan ID draft.',502);
+    await db.query("UPDATE pos_drafts SET status='SYNCED',draft_id=$1,last_error=NULL,updated_at=$2 WHERE reservation_id=$3",[draftId,now(),id]);
+    return {saved:true,synced:true,draftId};
+  } catch(error) {
+    await db.query("UPDATE pos_drafts SET status='FAILED',last_error=$1,updated_at=$2 WHERE reservation_id=$3",[clean(error.message,300),now(),id]);
+    return {saved:true,synced:false,message:'Menu tersimpan; pengiriman draft kasir belum berhasil.'};
+  }
+}
 function validateProof(proof) {
   if(!proof||typeof proof.data!=='string'||!/^[A-Za-z0-9+/]+={0,2}$/.test(proof.data))fail('Pilih bukti pembayaran yang valid.');
   const buffer=Buffer.from(proof.data,'base64');
@@ -143,9 +185,15 @@ export default async function handler(req,res) {
         await tx.query('INSERT INTO reservations(id,code,token_hash,event_id,visit_date,guest_count,status,deposit_amount,unique_code,expires_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',Object.values(r));return r;
       });return send(res,201,{reservation:publicReservation(r),token});
     }
-    const holdMatch=path.match(/^holds\/([^/]+)(?:\/(seats|payment))?$/);
+    const holdMatch=path.match(/^holds\/([^/]+)(?:\/(seats|payment|menu))?$/);
     if(holdMatch) {
       const [,id,action]=holdMatch;
+      if(action==='menu') {
+        await expire(db);
+        if(method==='GET')return send(res,200,await menuFor(db,await owns(db,id,req)));
+        if(method==='POST')return send(res,200,await saveMenu(db,id,await body(req),{req}));
+        fail('Permintaan tidak ditemukan.',404);
+      }
       if(method==='GET') {
         await expire(db);const r=await owns(db,id,req);
         return send(res,200,{reservation:publicReservation(r),seats:await seatsFor(db,id),units:await unitsFor(db,r.visit_date,id),payment:await paymentSettings(db)});
@@ -198,7 +246,7 @@ export default async function handler(req,res) {
         const reservations=await db.query("SELECT * FROM reservations WHERE status<>'HOLD' AND customer_name IS NOT NULL ORDER BY created_at DESC");
         const payments=await db.query('SELECT id,reservation_id,amount,status,uploaded_at,proof_name FROM payments ORDER BY uploaded_at DESC');
         const allocations=await db.query('SELECT s.*,u.name,z.name AS zone,z.id AS zone_id FROM reservation_seats s JOIN seating_units u ON u.id=s.unit_id JOIN zones z ON z.id=u.zone_id');
-        const items=await db.query('SELECT * FROM reservation_menu_items');
+        const items=await db.query('SELECT i.*,p.name FROM reservation_menu_items i JOIN menu_products p ON p.id=i.product_id');
         const drafts=await db.query('SELECT * FROM pos_drafts');
         const rows=reservations.map(r=>({...publicReservation(r),phone:r.phone,created_at:r.created_at,seats:allocations.filter(s=>s.reservation_id===r.id),payment:payments.find(p=>p.reservation_id===r.id),items:items.filter(i=>i.reservation_id===r.id),pos:drafts.find(d=>d.reservation_id===r.id)}));
         const pendingHolds=await db.query("SELECT visit_date,COALESCE(SUM(guest_count),0) AS guests FROM reservations WHERE status='HOLD' GROUP BY visit_date");
@@ -243,27 +291,7 @@ export default async function handler(req,res) {
       const menuMatch=path.match(/^admin\/reservations\/([^/]+)\/menu$/);
       if(menuMatch&&method==='POST') {
         const data=await body(req),id=menuMatch[1];
-        const payload=await db.transaction(async tx=>{
-          const initial=(await tx.query('SELECT * FROM reservations WHERE id=$1',[id]))[0];if(!initial)fail('Reservasi tidak ditemukan.',404);
-          await lockDay(tx,initial.visit_date);const r=(await tx.query('SELECT * FROM reservations WHERE id=$1',[id]))[0];
-          if(!['CONFIRMED','MENU_SELECTED'].includes(r.status))fail('DP harus dikonfirmasi sebelum mengisi menu.',409);
-          if(!Array.isArray(data.items)||!data.items.length||data.items.length>100)fail('Pilih minimal satu menu.');
-          const products=await tx.query('SELECT * FROM menu_products WHERE active=1');
-          const items=data.items.map(item=>{const p=products.find(p=>p.id===item.productId);const qty=Number(item.quantity);if(!p||!Number.isInteger(qty)||qty<1||qty>100)fail('Menu atau jumlah tidak valid.');return {product_id:p.external_id,menu_code:p.external_id,quantity:qty,note:clean(item.note,300),id:p.id};});
-          if(new Set(items.map(i=>i.id)).size!==items.length)fail('Menu duplikat. Gabungkan jumlahnya.');
-          await tx.query('DELETE FROM reservation_menu_items WHERE reservation_id=$1',[id]);
-          for(const i of items)await tx.query('INSERT INTO reservation_menu_items VALUES ($1,$2,$3,$4,$5)',[randomUUID(),id,i.id,i.quantity,i.note]);
-          await tx.query("UPDATE reservations SET status='MENU_SELECTED' WHERE id=$1",[id]);
-          await tx.query('INSERT INTO pos_drafts(reservation_id,external_reference,status,updated_at) VALUES ($1,$2,$3,$4) ON CONFLICT(reservation_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at',[id,r.code,process.env.POS_DRAFT_URL?'PENDING':'NOT_CONFIGURED',now()]);
-          await audit(tx,admin,id,'MENU_FINALIZED');
-          return {external_reference:r.code,visit_date:r.visit_date,customer:{name:r.customer_name,phone:r.phone},party_size:r.guest_count,seating:await seatsFor(tx,id),items:items.map(({id,...item})=>item),source_status:'MENU_SELECTED'};
-        });
-        if(!process.env.POS_DRAFT_URL)return send(res,200,{saved:true,synced:false,message:'Menu tersimpan. Endpoint draft kasir belum dihubungkan.'});
-        try {
-          const result=await cashierFetch(process.env.POS_DRAFT_URL,{method:'POST',headers:{'Idempotency-Key':payload.external_reference},body:JSON.stringify(payload)});
-          const draftId=clean(String(result.draft_id||result.id||''),150);if(!draftId)fail('Kasir tidak mengembalikan ID draft.',502);
-          await db.query("UPDATE pos_drafts SET status='SYNCED',draft_id=$1,last_error=NULL,updated_at=$2 WHERE reservation_id=$3",[draftId,now(),id]);return send(res,200,{saved:true,synced:true,draftId});
-        } catch(error){await db.query("UPDATE pos_drafts SET status='FAILED',last_error=$1,updated_at=$2 WHERE reservation_id=$3",[clean(error.message,300),now(),id]);return send(res,200,{saved:true,synced:false,message:'Menu tersimpan; kirim draft kasir belum berhasil. Coba lagi.'});}
+        return send(res,200,await saveMenu(db,id,data,{admin}));
       }
     }
     fail('Permintaan tidak ditemukan.',404);
