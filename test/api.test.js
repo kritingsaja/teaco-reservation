@@ -1,0 +1,89 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+
+process.env.SQLITE_PATH=':memory:';
+process.env.NODE_ENV='test';
+delete process.env.DATABASE_URL;
+delete process.env.ADMIN_USERNAME;
+delete process.env.ADMIN_PASSWORD;
+const {default:handler}=await import('../server/handler.js');
+const {getDb}=await import('../server/db.js');
+
+test('booking, authentication, capacity and payment use the database end to end',async t=>{
+  const server=createServer(handler);
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const origin=`http://127.0.0.1:${server.address().port}`;
+  let cookie='';
+  async function call(path,{method='GET',data,token,admin=false,originHeader=origin}={}) {
+    const r=await fetch(origin+'/api/'+path,{method,headers:{Origin:originHeader,...(data?{'Content-Type':'application/json'}:{}),...(token?{'X-Booking-Token':token}:{}),...(admin?{Cookie:cookie}:{})},body:data?JSON.stringify(data):undefined});
+    const type=r.headers.get('content-type');const body=type?.includes('application/json')?await r.json():await r.arrayBuffer();
+    return {status:r.status,body,headers:r.headers};
+  }
+  await t.test('empty database has no invented bookings or menus',async()=>{
+    const result=await call('public');assert.equal(result.status,200);assert.equal(result.body.days.length,28);assert.equal(result.body.days[0].remaining,65);assert.equal(result.body.days[0].booked,0);assert.equal(result.body.payment.configured,false);
+    assert.equal((await call('admin/dashboard')).status,401);
+    assert.equal((await call('holds',{method:'POST',data:{date:'2027-02-08',guests:4},originHeader:'https://other.example'})).status,403);
+  });
+  await t.test('concurrent holds cannot exceed 65 guests; expiry returns capacity',async()=>{
+    const responses=await Promise.all([call('holds',{method:'POST',data:{date:'2027-02-08',guests:40}}),call('holds',{method:'POST',data:{date:'2027-02-08',guests:40}})]);
+    assert.deepEqual(responses.map(r=>r.status).sort(),[201,409]);
+    assert.equal((await call('public')).body.days[0].remaining,25);
+    const db=await getDb();await db.query("UPDATE reservations SET expires_at=$1 WHERE visit_date='2027-02-08'",['2000-01-01T00:00:00.000Z']);
+    assert.equal((await call('public')).body.days[0].remaining,65);
+  });
+  let first,second;
+  await t.test('same table cannot be assigned to two guests and invalid tokens fail',async()=>{
+    first=(await call('holds',{method:'POST',data:{date:'2027-02-09',guests:4}})).body;
+    second=(await call('holds',{method:'POST',data:{date:'2027-02-09',guests:4}})).body;
+    assert.equal((await call(`holds/${first.reservation.id}`)).status,403);
+    assert.equal((await call(`holds/${first.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['m1']},token:first.token})).status,400);
+    assert.equal((await call(`holds/${first.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['m12']},token:first.token})).status,200);
+    assert.equal((await call(`holds/${second.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['m12']},token:second.token})).status,409);
+    assert.equal((await call(`holds/${second.reservation.id}`,{method:'DELETE',token:second.token})).status,200);
+  });
+  await t.test('first local admin is hashed and sessions are HttpOnly; wrong login fails',async()=>{
+    const setup=await call('auth/setup',{method:'POST',data:{username:'test_admin',password:'only-for-isolated-tests'}});
+    assert.equal(setup.status,201);cookie=setup.headers.get('set-cookie').split(';')[0];assert.match(setup.headers.get('set-cookie'),/HttpOnly/);assert.match(setup.headers.get('set-cookie'),/SameSite=Strict/);
+    assert.equal((await call('auth/setup',{method:'POST',data:{username:'another',password:'only-for-isolated-tests'}})).status,409);
+    assert.equal((await call('auth/login',{method:'POST',data:{username:'test_admin',password:'wrong'}})).status,401);
+    const db=await getDb();const account=(await db.query('SELECT password_hash FROM admin_users'))[0];assert.notEqual(account.password_hash,'only-for-isolated-tests');
+    const dashboard=await call('admin/dashboard',{admin:true});assert.equal(dashboard.status,200);assert.equal(dashboard.body.menu.length,0);assert.equal(dashboard.body.reservations.length,0);
+  });
+  let paymentId;
+  await t.test('payment needs configured bank and valid proof; private receipt is stored',async()=>{
+    const payment={name:'Test Pemesan',phone:'081234567890',proof:{name:'test.png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='}};
+    const path=`holds/${first.reservation.id}/payment`;
+    assert.equal((await call(path,{method:'POST',data:payment,token:first.token})).status,503);
+    assert.equal((await call('admin/settings',{method:'PATCH',admin:true,data:{bank_name:'BANK TEST',account_number:'123456789',account_holder:'TEST ONLY'}})).status,200);
+    assert.equal((await call(path,{method:'POST',data:{...payment,proof:{name:'evil.svg',data:Buffer.from('<svg><script>alert(1)</script></svg>').toString('base64')}},token:first.token})).status,400);
+    const paid=await call(path,{method:'POST',data:payment,token:first.token});assert.equal(paid.status,200);assert.equal(paid.body.reservation.status,'PENDING_VERIFICATION');
+    const dashboard=(await call('admin/dashboard',{admin:true})).body;assert.equal(dashboard.reservations.length,1);paymentId=dashboard.reservations[0].payment.id;assert.equal(JSON.stringify(dashboard).includes('proof_base64'),false);
+    assert.equal((await call('admin/proofs/'+paymentId)).status,401);
+    const proof=await call('admin/proofs/'+paymentId,{admin:true});assert.equal(proof.status,200);assert.equal(proof.headers.get('content-type'),'image/png');assert.ok(proof.body.byteLength>0);
+  });
+  await t.test('only admin confirms DP; menu cannot be invented or entered before approval',async()=>{
+    const path=`admin/reservations/${first.reservation.id}`;
+    assert.equal((await call(path+'/verify',{method:'POST',data:{action:'approve'}})).status,401);
+    assert.equal((await call(path+'/menu',{method:'POST',admin:true,data:{items:[{productId:'invented',quantity:4}]}})).status,409);
+    assert.equal((await call(path+'/verify',{method:'POST',admin:true,data:{action:'approve'}})).status,200);
+    assert.equal((await call(path+'/verify',{method:'POST',admin:true,data:{action:'approve'}})).status,409);
+    assert.equal((await call(path+'/menu',{method:'POST',admin:true,data:{items:[{productId:'invented',quantity:4}]}})).status,400);
+    assert.equal((await call('admin/menu/sync',{method:'POST',admin:true,data:{}})).status,503);
+    const day=(await call('public')).body.days[1];assert.equal(day.booked,4);assert.equal(day.remaining,61);assert.equal(day.held,0);
+    const lookup=await call('reservations/lookup',{method:'POST',data:{code:first.reservation.code,phone:'081234567890'}});assert.equal(lookup.status,200);assert.equal(lookup.body.reservation.status,'CONFIRMED');assert.equal(lookup.body.seats[0].name,'Meja 12');
+    assert.equal((await call('reservations/lookup',{method:'POST',data:{code:first.reservation.code,phone:'081299999999'}})).status,404);
+    const publicData=JSON.stringify((await call('public')).body);assert.equal(publicData.includes('Test Pemesan'),false);assert.equal(publicData.includes('081234567890'),false);
+  });
+  await t.test('logout invalidates the server session',async()=>{
+    assert.equal((await call('auth/logout',{method:'POST',admin:true,data:{}})).status,200);
+    assert.equal((await call('admin/dashboard',{admin:true})).status,401);
+  });
+  await t.test('fully reserved seating never advertises unusable spare quota',async()=>{
+    const units=['m1','m2','m3','m4','m12','m13','m14','m15','ac-right','ac-left','tv','out-right','out-left','tribun'];
+    for(const unit of units){const hold=(await call('holds',{method:'POST',data:{date:'2027-02-11',guests:1}})).body;assert.equal((await call(`holds/${hold.reservation.id}/seats`,{method:'PATCH',data:{unitIds:[unit]},token:hold.token})).status,200);}
+    const day=(await call('public')).body.days.find(d=>d.visit_date==='2027-02-11');assert.equal(day.used,14);assert.equal(day.available_capacity,0);assert.equal(day.remaining,0);
+    assert.equal((await call('holds',{method:'POST',data:{date:'2027-02-11',guests:1}})).status,409);
+  });
+});

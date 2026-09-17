@@ -1,0 +1,14 @@
+{
+  "name": "teaco-reservation",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env.local server/dev.js",
+    "start": "node --env-file-if-exists=.env.local server/dev.js",
+    "build": "node --check dist/app.js && node --check server/handler.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": { "pg": "^8.16.3" }
+}
