@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 
 process.env.SQLITE_PATH=':memory:';
 process.env.NODE_ENV='test';
 delete process.env.DATABASE_URL;
+delete process.env.TURSO_DATABASE_URL;
+delete process.env.TURSO_AUTH_TOKEN;
+if(process.env.TEACO_TEST_TURSO==='1')process.env.TURSO_DATABASE_URL=pathToFileURL(join(mkdtempSync(join(tmpdir(),'teaco-turso-api-')),'test.sqlite')).href;
 delete process.env.ADMIN_USERNAME;
 delete process.env.ADMIN_PASSWORD;
 const {default:handler}=await import('../server/handler.js');
@@ -14,6 +21,7 @@ test('booking, authentication, capacity and payment use the database end to end'
   const server=createServer(handler);
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>server.close(resolve)));
+  t.after(async()=>{(await getDb()).close?.();});
   const origin=`http://127.0.0.1:${server.address().port}`;
   let cookie='';
   async function call(path,{method='GET',data,token,admin=false,originHeader=origin}={}) {

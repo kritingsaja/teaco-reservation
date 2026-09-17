@@ -20,7 +20,6 @@ export async function createAdmin(tx,username,password) {
 export async function bootstrapAdmin(db) {
   if(!process.env.ADMIN_USERNAME||!process.env.ADMIN_PASSWORD) return;
   await db.transaction(async tx=>{
-    if(tx.kind==='postgres') await tx.query('SELECT pg_advisory_xact_lock(742014)');
     if(!(await tx.query('SELECT id FROM admin_users LIMIT 1')).length) await createAdmin(tx,process.env.ADMIN_USERNAME,process.env.ADMIN_PASSWORD);
   });
 }

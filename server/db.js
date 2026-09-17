@@ -9,17 +9,12 @@ export async function getDb() {
 }
 async function createDb() {
   let db;
-  if(process.env.DATABASE_URL) {
-    const { default: pg } = await import('pg');
-    const pool = new pg.Pool({connectionString:process.env.DATABASE_URL,max:3,connectionTimeoutMillis:10000,idleTimeoutMillis:10000});
-    const query = async (sql,params=[]) => (await pool.query(sql,params)).rows;
-    db={kind:'postgres',query,transaction:async fn=>{
-      const client=await pool.connect();
-      try {await client.query('BEGIN');const tx={kind:'postgres',query:async(sql,params=[]) => (await client.query(sql,params)).rows};const value=await fn(tx);await client.query('COMMIT');return value;}
-      catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
-    }};
+  if(process.env.TURSO_DATABASE_URL||process.env.TURSO_AUTH_TOKEN) {
+    if(!process.env.TURSO_DATABASE_URL)throw Object.assign(new Error('TURSO_DATABASE_URL belum diatur di server.'),{status:503,code:'TURSO_NOT_CONFIGURED'});
+    const {createTursoDb}=await import('./turso.js');
+    db=createTursoDb({url:process.env.TURSO_DATABASE_URL,authToken:process.env.TURSO_AUTH_TOKEN,allowLocal:localMode()});
   } else {
-    if(!localMode()) throw Object.assign(new Error('Database production belum terhubung.'),{status:503,code:'DATABASE_NOT_CONFIGURED'});
+    if(!localMode()) throw Object.assign(new Error('Turso belum terhubung. Atur TURSO_DATABASE_URL dan TURSO_AUTH_TOKEN di server.'),{status:503,code:'TURSO_NOT_CONFIGURED'});
     const {DatabaseSync}=await import('node:sqlite');
     const file=process.env.SQLITE_PATH||resolve('.data/teaco.sqlite');
     if(file!==':memory:') mkdirSync(resolve(file,'..'),{recursive:true});
@@ -40,20 +35,21 @@ async function createDb() {
     })};
   }
   const schema=readFileSync(new URL('./schema.sql',import.meta.url),'utf8');
-  await db.transaction(async tx=>{
-    if(tx.kind==='postgres') await tx.query('SELECT pg_advisory_xact_lock(742013)');
-    for(const statement of schema.split(';').map(x=>x.trim()).filter(Boolean)) await tx.query(statement);
-    await tx.query('INSERT INTO events VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING',Object.values(EVENT));
-    for(const day of days()) await tx.query('INSERT INTO event_days VALUES ($1,$2) ON CONFLICT(visit_date) DO NOTHING',[day,EVENT.id]);
-    for(const [i,zone] of ZONES.entries()) {
-      await tx.query('INSERT INTO zones VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING',[zone.id,EVENT.id,zone.name,zone.capacity,i]);
-      for(const [j,[id,name,capacity]] of zone.units.entries()) await tx.query('INSERT INTO seating_units VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING',[id,zone.id,name,capacity,j]);
-    }
-  });
+  const statements=schema.split(';').map(x=>x.trim()).filter(Boolean).map(sql=>({sql}));
+  statements.push({sql:'INSERT INTO events VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING',params:Object.values(EVENT)});
+  for(const day of days())statements.push({sql:'INSERT INTO event_days VALUES ($1,$2) ON CONFLICT(visit_date) DO NOTHING',params:[day,EVENT.id]});
+  for(const [i,zone] of ZONES.entries()) {
+    statements.push({sql:'INSERT INTO zones VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING',params:[zone.id,EVENT.id,zone.name,zone.capacity,i]});
+    for(const [j,[id,name,capacity]] of zone.units.entries())statements.push({sql:'INSERT INTO seating_units VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING',params:[id,zone.id,name,capacity,j]});
+  }
+  try {
+    if(db.initialize)await db.initialize(statements);
+    else await db.transaction(async tx=>{for(const {sql,params=[]} of statements)await tx.query(sql,params);});
+  }catch(error){db.close?.();throw error;}
   return db;
 }
 export async function lockDay(tx,date) {
-  const rows=await tx.query(`SELECT visit_date FROM event_days WHERE visit_date=$1${tx.kind==='postgres'?' FOR UPDATE':''}`,[date]);
+  const rows=await tx.query('SELECT visit_date FROM event_days WHERE visit_date=$1',[date]);
   if(!rows.length) throw Object.assign(new Error('Tanggal di luar periode reservasi.'),{status:400});
 }
 export async function expire(tx,date) {

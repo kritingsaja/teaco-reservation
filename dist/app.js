@@ -177,7 +177,7 @@ function renderAdmin(){
   $('#menu-source').textContent=data.menu.length?`${data.menu.length} produk tersinkron`:'Belum ada menu tersinkron';$('#sync-menu').disabled=!data.posConfigured;
   $('#menu-integration-note').textContent=data.posConfigured?(data.draftConfigured?'Menu final siap dikirim sebagai draft kasir.':'Menu dapat diambil; endpoint draft kasir belum dihubungkan.'):'Hubungkan API aplikasi kasir untuk mengambil menu dan membuat draft otomatis.';
   for(const key of ['bank_name','account_number','account_holder'])$('#settings-form').elements[key].value=data.settings[key]||'';
-  $('#data-status').innerHTML=`<div class="storage-badge">${icon('database')}${data.storage==='postgres'?'PostgreSQL · database online':'SQLite · database pengujian lokal'}</div><p class="muted">${data.storage==='postgres'?'Data tersimpan di server dan digunakan bersama oleh semua perangkat.':'Data tersimpan di file .data/teaco.sqlite pada komputer ini. Versi Vercel memerlukan koneksi PostgreSQL tersendiri.'}</p>`;
+  $('#data-status').innerHTML=`<div class="storage-badge">${icon('database')}${data.storage==='turso'?'Turso · SQLite online':'SQLite · database pengujian lokal'}</div><p class="muted">${data.storage==='turso'?'Data tersimpan di Turso dan digunakan bersama oleh semua perangkat.':'Data tersimpan di file .data/teaco.sqlite pada komputer ini. Versi Vercel memerlukan koneksi Turso tersendiri.'}</p>`;
   setAdminTab(state.tab);
 }
 function renderStats(){

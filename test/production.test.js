@@ -3,11 +3,18 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 process.env.NODE_ENV='production';
 delete process.env.DATABASE_URL;
+delete process.env.TURSO_DATABASE_URL;
+delete process.env.TURSO_AUTH_TOKEN;
 const {default:handler}=await import('../server/handler.js');
-test('production without PostgreSQL has no temporary database or pretend availability',async t=>{
+test('production without Turso has no temporary database or pretend availability',async t=>{
   const server=createServer(handler);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const origin=`http://127.0.0.1:${server.address().port}`;
   const response=await fetch(origin+'/api/public');const data=await response.json();assert.equal(data.ready,false);assert.equal(data.days.length,28);assert.ok(data.days.every(d=>d.remaining===null));
   assert.equal((await fetch(origin+'/api/auth/session')).status,503);
   assert.equal((await fetch(origin+'/api/holds',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({date:'2027-02-08',guests:4})})).status,503);
+  process.env.TURSO_DATABASE_URL='libsql://test-invalid.turso.io';
+  const missingToken=await fetch(origin+'/api/auth/session');assert.equal(missingToken.status,503);assert.equal((await missingToken.json()).code,'TURSO_NOT_CONFIGURED');
+  process.env.TURSO_DATABASE_URL='file:should-never-create.sqlite';
+  const fileInProduction=await fetch(origin+'/api/auth/session');assert.equal(fileInProduction.status,503);assert.equal((await fileInProduction.json()).code,'TURSO_INVALID_URL');
+  delete process.env.TURSO_DATABASE_URL;
 });

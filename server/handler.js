@@ -149,7 +149,6 @@ export default async function handler(req,res) {
         const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'').split(',')[0].trim();
         const key=hash(ip+':'+username.toLowerCase());
         const result=await db.transaction(async tx=>{
-          if(tx.kind==='postgres')await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))',[key]);
           const attempts=(await tx.query('SELECT * FROM login_attempts WHERE attempt_key=$1',[key]))[0];
           if(attempts&&attempts.expires_at>now()&&Number(attempts.failures)>=5) return {error:'Terlalu banyak percobaan. Coba lagi dalam 15 menit.',status:429};
           const admin=(await tx.query('SELECT * FROM admin_users WHERE username=$1',[username]))[0];
