@@ -73,6 +73,17 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await call('admin/proofs/'+paymentId)).status,401);
     const proof=await call('admin/proofs/'+paymentId,{admin:true});assert.equal(proof.status,200);assert.equal(proof.headers.get('content-type'),'image/png');assert.ok(proof.body.byteLength>0);
   });
+  await t.test('guest can save a reservation and resume DP payment with reservation code',async()=>{
+    const later=(await call('holds',{method:'POST',data:{date:'2027-02-10',guests:2}})).body;
+    assert.equal((await call(`holds/${later.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['m1']},token:later.token})).status,200);
+    const saved=await call(`holds/${later.reservation.id}/payment-intent`,{method:'POST',token:later.token,data:{name:'Bayar Nanti',phone:'081234567891',note:'Akan transfer nanti'}});
+    assert.equal(saved.status,200);assert.equal(saved.body.reservation.status,'PENDING_PAYMENT');
+    const lookup=await call('reservations/lookup',{method:'POST',data:{code:later.reservation.code,phone:'081234567891'}});
+    assert.equal(lookup.status,200);assert.equal(lookup.body.reservation.status,'PENDING_PAYMENT');
+    const proof={name:'lanjut-bayar.png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='};
+    const paid=await call(`holds/${later.reservation.id}/payment`,{method:'POST',token:lookup.body.token,data:{name:'Bayar Nanti',phone:'081234567891',note:'Akan transfer nanti',proof}});
+    assert.equal(paid.status,200);assert.equal(paid.body.reservation.status,'PENDING_VERIFICATION');
+  });
   await t.test('only admin confirms DP; menu cannot be invented or entered before approval',async()=>{
     const path=`admin/reservations/${first.reservation.id}`;
     assert.equal((await call(path+'/verify',{method:'POST',data:{action:'approve'}})).status,401);
@@ -117,7 +128,7 @@ test('booking, authentication, capacity and payment use the database end to end'
       const edited=await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:3,note:'Less sugar'}]}});assert.equal(edited.status,200);
       assert.equal(requests[1].key,requests[0].key);
       saved=(await call(path,{token:first.token})).body;assert.equal(saved.items.length,1);assert.equal(saved.items[0].quantity,3);
-      const dashboard=(await call('admin/dashboard',{admin:true})).body;assert.equal(dashboard.reservations[0].items[0].quantity,3);
+      const dashboard=(await call('admin/dashboard',{admin:true})).body;assert.equal(dashboard.reservations.find(r=>r.id===first.reservation.id).items[0].quantity,3);
       unavailable=true;
       const failed=await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:4}]}});assert.equal(failed.body.saved,true);assert.equal(failed.body.synced,false);
       assert.equal((await call(path,{token:first.token})).body.pos.status,'FAILED');
@@ -141,3 +152,4 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await call('holds',{method:'POST',data:{date:'2027-02-11',guests:1}})).status,409);
   });
 });
+
