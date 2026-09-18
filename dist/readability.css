@@ -158,9 +158,29 @@ input:not([type=checkbox]):not([type=file]),textarea,select {font-size:16px}
 .payment-side .pay-later{width:100%;justify-content:center;margin-top:9px;color:var(--text);border:1px solid var(--line);border-radius:11px;padding:8px 12px}
 .payment-later-note{margin:8px 4px 0;color:var(--muted);font-size:12px;line-height:1.55;text-align:center}
 .guide-dialog{width:min(480px,calc(100% - 32px))}
+.section-map.indoor{grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:150px;min-height:0;max-width:none}
+.section-map.ac{grid-template-columns:1fr;min-height:190px;max-width:none}
+.section-map.outdoor{min-height:0;max-width:none}
+.section-map .seat{min-height:135px;padding:20px 10px;gap:12px}
+.section-map .seat strong{font-size:16px;overflow-wrap:anywhere}
+.section-map .seat-status{font-size:12px}
+.seat.partial{background:var(--limited-bg);color:var(--limited-text);border-color:var(--limited-line)}
+.seat-legend .partial{background:var(--limited-bg);border-color:var(--limited-line)}
+.section-map .seat>svg{height:27px;width:27px}
+.section-map .seat .seat-check{height:18px;width:18px;right:10px;top:10px}
+.payment-feedback{font-size:13px;line-height:1.6;color:var(--text);margin:12px 0 0;grid-column:1/-1}
+@media(max-width:640px){
+  .section-map.indoor{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:auto auto;gap:10px}
+  .section-map.indoor [data-unit=indoor-sofa]{grid-column:1/-1}
+  .section-map .seat{min-height:122px;gap:10px;padding:18px 8px}
+  .section-map .seat strong{font-size:14px}.section-map .seat-status{font-size:11px}
+  .section-map.ac .seat{min-height:180px}
+  .payment-side>.pay-later{grid-row:5}.payment-side>.payment-later-note{grid-row:6}
+  .payment-side>.payment-feedback{grid-row:7}.payment-side>.form-error{grid-row:8}
+  .reservation-access{grid-column:1/-1}
+}
 .guide-steps{list-style:none;padding:0;margin:23px 0;display:grid;gap:16px}
 .guide-steps li{display:grid;grid-template-columns:30px minmax(0,1fr);gap:12px;align-items:start}
 .guide-steps b{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--tint);border:1px solid var(--accent);color:var(--accent);font-size:12px}
 .guide-steps strong,.guide-steps small{display:block}.guide-steps strong{font-size:14px}.guide-steps small{margin-top:3px;color:var(--muted);font-size:12px;line-height:1.5}.guide-dialog .primary{width:100%}
 @media(max-width:640px){.reservation-access{margin-top:5px;padding:18px}.reservation-access strong{font-size:14px}.guide-steps{gap:14px}}
-

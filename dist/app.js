@@ -70,31 +70,31 @@ async function loadSeats(){const result=await request('holds/'+state.booking.id)
 function allocations(){
   const chosen=state.selected.map(id=>state.units.find(u=>u.id===id)).filter(Boolean);
   if(!chosen.length)return {result:[],rest:state.booking?.guest_count||0};
-  const options=state.split?[...chosen,...state.units.filter(u=>!Number(u.occupied)&&!state.selected.includes(u.id))]:chosen;
+  const options=state.split?[...chosen,...state.units.filter(u=>Number(u.remaining)>0&&!state.selected.includes(u.id)).sort((a,b)=>Number(b.zone_id===state.zone)-Number(a.zone_id===state.zone))]:chosen;
   const result=[];let rest=state.booking?.guest_count||0;
-  for(const unit of options){if(rest<=0)break;const guests=Math.min(rest,Number(unit.capacity));result.push({...unit,guests});rest-=guests;}
+  for(const unit of options){if(rest<=0)break;const guests=Math.min(rest,Number(unit.remaining));if(guests>0){result.push({...unit,guests});rest-=guests;}}
   return {result,rest};
 }
 function renderSeats(){
   if(!state.booking)return;
   $('#seat-context').textContent=dateText(state.booking.visit_date)+' · 17.00 — 20.00';$('#seat-party').textContent=state.booking.guest_count+' orang';
   const zones=[{id:'indoor',name:'Indoor'},{id:'ac',name:'AC'},{id:'outdoor',name:'Outdoor'}];
-  $('#zone-tabs').innerHTML=zones.map(z=>`<button class="zone-tab ${state.zone===z.id?'active':''}" data-zone="${z.id}" role="tab" aria-selected="${state.zone===z.id}" aria-controls="seat-map">${z.name}<small>${state.units.filter(u=>u.zone_id===z.id&&!Number(u.occupied)).reduce((s,u)=>s+Number(u.capacity),0)}</small></button>`).join('');
+  $('#zone-tabs').innerHTML=zones.map(z=>`<button class="zone-tab ${state.zone===z.id?'active':''}" data-zone="${z.id}" role="tab" aria-selected="${state.zone===z.id}" aria-controls="seat-map">${z.name}</button>`).join('');
   $$('#zone-tabs button').forEach(button=>button.addEventListener('click',()=>{state.zone=button.dataset.zone;renderSeats();}));
-  $('#floor-title').textContent=zones.find(z=>z.id===state.zone).name;$('#floor-caption').textContent=state.zone==='indoor'?'Pilih satu atau beberapa meja':'Pilih section untuk rombongan';
+  $('#floor-title').textContent=zones.find(z=>z.id===state.zone).name;$('#floor-caption').textContent=state.zone==='ac'?'Satu area untuk rombonganmu':'Pilih lokasi duduk rombonganmu';
   const selected=allocations().result;
-  $('#seat-map').className='seat-map '+state.zone;
+  $('#seat-map').className='seat-map section-map '+state.zone;
   $('#seat-map').innerHTML=state.units.filter(u=>u.zone_id===state.zone).map(unit=>{
-    const occupied=Number(unit.occupied)>0,chosen=!occupied&&selected.some(s=>s.id===unit.id);
-    const statusText=occupied?'Terisi':chosen?'Dipilih':'Kosong';
-    return `<button class="seat ${chosen?'selected':occupied?'occupied':'available'}" data-unit="${unit.id}" aria-label="${escape(unit.name)}, ${unit.capacity} kursi, ${statusText}" aria-pressed="${chosen}" ${occupied?'disabled':''}>${icon(occupied?'lock':'seat')}<strong>${escape(unit.name)}</strong><small>${unit.capacity} kursi</small><span class="seat-status">${statusText}</span>${chosen?icon('check','seat-check'):''}</button>`;
+    const full=Number(unit.remaining)<=0,partial=Number(unit.occupied)>0,chosen=!full&&selected.some(s=>s.id===unit.id);
+    const statusText=full?'Penuh':chosen?'Dipilih':partial?'Masih tersedia':'Kosong';
+    return `<button class="seat ${chosen?'selected':full?'occupied':partial?'partial':'available'}" data-unit="${unit.id}" aria-label="${escape(unit.name)}, ${statusText}" aria-pressed="${chosen}" ${full?'disabled':''}>${icon(full?'lock':'seat')}<strong>${escape(unit.name)}</strong><span class="seat-status">${statusText}</span>${chosen?icon('check','seat-check'):''}</button>`;
   }).join('');
-  $$('#seat-map button:not(:disabled)').forEach(button=>button.addEventListener('click',()=>{const id=button.dataset.unit;if(state.selected.includes(id))state.selected=state.selected.filter(x=>x!==id);else if(state.selected.reduce((sum,id)=>sum+Number(state.units.find(u=>u.id===id)?.capacity||0),0)>=state.booking.guest_count)state.selected=[id];else state.selected.push(id);renderSeats();}));
+  $$('#seat-map button:not(:disabled)').forEach(button=>button.addEventListener('click',()=>{const id=button.dataset.unit;if(state.selected.includes(id))state.selected=state.selected.filter(x=>x!==id);else if(state.selected.reduce((sum,id)=>sum+Number(state.units.find(u=>u.id===id)?.remaining||0),0)>=state.booking.guest_count)state.selected=[id];else state.selected.push(id);renderSeats();}));
   const {result,rest}=allocations();$('#selection').textContent=result.length?result.map(s=>s.name).join(' + '):'Belum ada';
-  $('#selection-detail').textContent=result.length?(rest>0?`Masih perlu tempat untuk ${rest} orang.`:result.map(s=>`${s.zone_name}: ${s.guests} orang`).join(' · ')):'';
+  $('#selection-detail').textContent=result.length?(rest>0?'Belum cukup untuk rombonganmu. Pilih seksi tambahan atau izinkan pembagian.':result.map(s=>`${s.name}: ${s.guests} orang`).join(' · ')):'';
   $('#to-payment').disabled=!state.selected.length||rest>0||state.booking.status!=='HOLD';updateTimer();
 }
-function updateTimer(){if(state.booking?.status!=='HOLD')return;const seconds=Math.max(0,Math.ceil((Date.parse(state.booking.expires_at)-Date.now())/1000));$('#hold-timer').textContent=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;if(!seconds){$('#to-payment').disabled=true;$('#selection-detail').textContent='Waktu habis. Pilih tanggal kembali.';$('#submit-payment').disabled=true;}}
+function updateTimer(){if($('#payment-screen').classList.contains('active'))updatePaymentControls();if(state.booking?.status!=='HOLD')return;const seconds=Math.max(0,Math.ceil((Date.parse(state.booking.expires_at)-Date.now())/1000));$('#hold-timer').textContent=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;if(!seconds){$('#to-payment').disabled=true;$('#selection-detail').textContent='Waktu habis. Pilih tanggal kembali.';}}
 setInterval(updateTimer,1000);
 $('#allow-split').addEventListener('change',event=>{state.split=event.target.checked;renderSeats();});
 $('#to-payment').addEventListener('click',()=>busy($('#to-payment'),async()=>{try{const selected=allocations().result;await request(`holds/${state.booking.id}/seats`,{method:'PATCH',body:JSON.stringify({unitIds:selected.map(s=>s.id)})});state.selected=selected.map(s=>s.id);renderPayment(selected);setScreen('payment-screen');}catch(error){toast(error.message);await loadSeats();}}));
@@ -102,13 +102,22 @@ function row(label,value){return `<div class="summary-row"><span>${escape(label)
 function renderPayment(seats=allocations().result){
   const r=state.booking;$('#payment-summary').innerHTML=row('Tanggal',dateText(r.visit_date,true))+row('Jumlah tamu',r.guest_count+' orang')+row('Tempat',seats.map(s=>s.name).join(' + '))+row('DP',money(r.deposit_amount))+row('Kode unik',String(r.unique_code).padStart(3,'0'));
   $('#total-transfer').textContent=money(r.total_transfer);const bank=state.public?.payment;
-  $('#bank-details').innerHTML=bank?.configured?`<small>Transfer ke</small><strong>${escape(bank.bank_name)}</strong><strong class="account-number">${escape(bank.account_number)}</strong><small>a.n. ${escape(bank.account_holder)}</small>`:'<h2>Pembayaran belum tersedia</h2><p class="muted" style="margin:8px 0 0">Admin belum mengatur rekening DP.</p>';
-  const draft=state.paymentDraft||{};$('#customer-name').value=draft.name||r.customer_name||'';$('#customer-phone').value=draft.phone||'';$('#payment-form [name=note]').value=draft.note||r.note||'';
-  $('#submit-payment').disabled=!bank?.configured;$('#payment-error').textContent='';
+  $('#bank-details').innerHTML=bank?.configured?`<small>Transfer ke</small><strong>${escape(bank.bank_name)}</strong><strong class="account-number">${escape(bank.account_number)}</strong><small>a.n. ${escape(bank.account_holder)}</small>`:'<h2>Rekening belum ditampilkan</h2><p class="muted" style="margin:8px 0 0">Belum transfer? Minta rekening kepada admin. Jika sudah transfer sesuai arahan admin, unggah buktinya di sini untuk diverifikasi.</p>';
+  const draft=state.paymentDraft||{};$('#customer-name').value=draft.name||r.customer_name||'';$('#customer-phone').value=draft.phone||r.phone||'';$('#payment-form [name=note]').value=draft.note||r.note||'';
+  const back=$('#payment-screen [data-back]');back.dataset.back=r.status==='HOLD'?'seat-screen':'pending-screen';back.innerHTML=icon('back')+(r.status==='HOLD'?'Tempat duduk':'Reservasi saya');
+  $('#payment-error').textContent='';updatePaymentControls();
+}
+function updatePaymentControls(){
+  const r=state.booking,file=$('#payment-proof').files[0],button=$('#submit-payment');
+  const expired=r?.expires_at&&Date.parse(r.expires_at)<=Date.now();
+  const payable=r&&['HOLD','PENDING_PAYMENT'].includes(r.status)&&!expired;
+  button.disabled=button.classList.contains('is-loading')||!payable;
+  $('#save-payment-later').hidden=r?.status!=='HOLD';$('.payment-later-note').hidden=r?.status!=='HOLD';
+  $('#payment-feedback').textContent=!payable?'Reservasi tidak dapat dibayar lagi. Kembali ke Reservasi saya untuk mengecek status.':file?(file.size>2*1024*1024?'File terlalu besar. Pilih gambar atau PDF maksimal 2 MB.':'Bukti dipilih. Tekan “Kirim bukti DP” untuk mengirim ke admin.'):'Pilih gambar atau PDF bukti transfer, lalu tekan “Kirim bukti DP”.';
 }
 function rememberPaymentDraft(){state.paymentDraft={name:$('#customer-name').value,phone:$('#customer-phone').value,note:$('#payment-form [name=note]').value};saveBooking();}
 ['#customer-name','#customer-phone','#payment-form [name=note]'].forEach(selector=>$(selector).addEventListener('input',rememberPaymentDraft));
-$('#payment-proof').addEventListener('change',event=>{const file=event.target.files[0];$('#file-name').textContent=file?.name||'Pilih bukti transfer';$('#payment-error').textContent=file&&file.size>2*1024*1024?'File terlalu besar. Maksimal 2 MB.':'';});
+$('#payment-proof').addEventListener('change',event=>{const file=event.target.files[0];$('#file-name').textContent=file?.name||'Pilih bukti transfer';$('#payment-error').textContent='';updatePaymentControls();});
 const readProof=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve({name:file.name,data:reader.result.split(',')[1]});reader.onerror=()=>reject(new Error('File belum dapat dibaca.'));reader.readAsDataURL(file);});
 $('#payment-form').addEventListener('submit',event=>{event.preventDefault();busy($('#submit-payment'),async()=>{
   try{const file=$('#payment-proof').files[0];if(!file||file.size>2*1024*1024)throw new Error('Pilih bukti DP maksimal 2 MB.');rememberPaymentDraft();const data=Object.fromEntries(new FormData(event.target));data.proof=await readProof(file);const result=await post(`holds/${state.booking.id}/payment`,data);state.booking=result.reservation;state.paymentDraft=null;saveBooking();renderTicket(result.seats);setScreen('pending-screen');await loadCalendar();}
@@ -120,7 +129,7 @@ $('#save-payment-later').addEventListener('click',()=>busy($('#save-payment-late
 }));
 function renderTicket(seats=[]){
   const r=state.booking;if(!r)return;const confirmed=bookedStatuses.includes(r.status),canMenu=['CONFIRMED','MENU_SELECTED'].includes(r.status);
-  $('#status-label').textContent=confirmed?'RESERVASI DIKONFIRMASI':r.status==='PENDING_PAYMENT'?'BUKTI PERLU DIPERBAIKI':r.status==='EXPIRED'?'RESERVASI KEDALUWARSA':'BUKTI DP DITERIMA';
+  $('#status-label').textContent=confirmed?'RESERVASI DIKONFIRMASI':r.status==='PENDING_PAYMENT'?'MENUNGGU DP':r.status==='EXPIRED'?'RESERVASI KEDALUWARSA':'BUKTI DP DITERIMA';
   $('#pending-title').textContent=r.status==='MENU_SELECTED'?'Menu sudah tersimpan.':confirmed?'DP sudah dikonfirmasi.':r.status==='PENDING_PAYMENT'?'Reservasi disimpan.':r.status==='EXPIRED'?'Waktu pembayaran habis':'Menunggu verifikasi';
   $('#status-description').textContent=canMenu?(r.status==='MENU_SELECTED'?'Pilihanmu dapat diubah sampai 07.00 WIB hari kunjungan.':'Sekarang kamu bisa memilih menu untuk rombonganmu.'):confirmed?'Sampai bertemu saat berbuka di TEACO.':r.status==='PENDING_PAYMENT'?'Kirim DP sekarang, atau buka lagi lewat “Reservasi saya” menggunakan kode dan WhatsApp.':r.status==='EXPIRED'?'Silakan buat reservasi baru.':'Menu akan terbuka setelah admin menyetujui DP.';
   $('#booking-code').textContent=r.code;$('#ticket-details').innerHTML=row('Tanggal',dateText(r.visit_date,true))+row('Tamu',r.guest_count+' orang')+row('Tempat',seats.map(s=>s.name).join(' + '));$('#reupload-proof').hidden=r.status!=='PENDING_PAYMENT';
@@ -160,11 +169,11 @@ $('#copy-code').addEventListener('click',async()=>{try{await navigator.clipboard
 $('#new-booking').addEventListener('click',()=>{state.booking=null;state.token=null;storage.remove('teaco-booking',true);setScreen('date-screen');loadCalendar();});
 $('.brand').addEventListener('click',async event=>{event.preventDefault();await releaseHold();setScreen('date-screen');loadCalendar();});
 $('#reupload-proof').addEventListener('click',async()=>{try{const result=await request('holds/'+state.booking.id);state.booking=result.reservation;state.public.payment=result.payment;renderPayment(result.seats);setScreen('payment-screen');}catch(error){toast(error.message);}});
-$$('[data-back]').forEach(button=>button.addEventListener('click',async()=>{try{if(button.dataset.back==='date-screen'){await releaseHold();setScreen('date-screen');loadCalendar();}else{await loadSeats();setScreen(button.dataset.back);}}catch(error){toast(error.message);}}));
+$$('[data-back]').forEach(button=>button.addEventListener('click',async()=>{try{if(button.dataset.back==='date-screen'){await releaseHold();setScreen('date-screen');loadCalendar();}else if(button.dataset.back==='pending-screen'){const result=await request('holds/'+state.booking.id);state.booking=result.reservation;renderTicket(result.seats);setScreen('pending-screen');}else{await loadSeats();setScreen(button.dataset.back);}}catch(error){toast(error.message);}}));
 $('#open-lookup').addEventListener('click',()=>{$('#lookup-error').textContent='';openDialog('lookup-dialog');});
 $('#open-guide').addEventListener('click',()=>openDialog('guide-dialog'));
 $('#guide-to-book').addEventListener('click',()=>$('#guide-dialog').close());
-$('#lookup-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{const form=new FormData(event.target),phone=form.get('phone'),result=await post('reservations/lookup',Object.fromEntries(form));state.booking=result.reservation;state.token=result.token;state.paymentDraft={name:result.reservation.customer_name||'',phone,note:result.reservation.note||''};saveBooking();$('#lookup-dialog').close();if(state.booking.status==='PENDING_PAYMENT'){renderPayment(result.seats);setScreen('payment-screen');toast('Lanjutkan dengan unggah bukti DP.');}else{renderTicket(result.seats);setScreen('pending-screen');}}catch(error){$('#lookup-error').textContent=error.message;}});});
+$('#lookup-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{const form=new FormData(event.target),phone=form.get('phone'),result=await post('reservations/lookup',Object.fromEntries(form));state.booking=result.reservation;state.token=result.token;state.public.payment=result.payment||state.public.payment;state.paymentDraft={name:result.reservation.customer_name||'',phone,note:result.reservation.note||''};saveBooking();$('#lookup-dialog').close();if(state.booking.status==='PENDING_PAYMENT'){renderPayment(result.seats);setScreen('payment-screen');toast('Lanjutkan dengan unggah bukti DP.');}else{renderTicket(result.seats);setScreen('pending-screen');}}catch(error){$('#lookup-error').textContent=error.message;}});});
 
 async function openAdmin(){
   history.replaceState(null,'','#/admin');
@@ -198,7 +207,7 @@ function renderStats(){
   const verified=rows.filter(r=>r.payment?.status==='VERIFIED'),held=state.admin.holds.filter(r=>!date||r.visit_date===date).reduce((s,r)=>s+Number(r.guests),0);
   const stat=(title,value,foot,cls='')=>`<div class="stat ${cls}"><small>${title}</small><strong>${value}</strong><span>${foot}</span></div>`;
   $('#admin-stats').innerHTML=stat('Reservasi',booked.length,'Sudah dikonfirmasi')+stat('Tamu booked',sum(booked,'guest_count'),'Kursi terkonfirmasi')+stat('Perlu verifikasi',pending.length,'Bukti DP masuk')+stat('DP terverifikasi',money(verified.reduce((s,r)=>s+Number(r.payment.amount),0)),'Pembayaran diterima','money');
-  const zones=[['indoor','Indoor',24],['ac','AC',20],['outdoor','Outdoor',44]],dayCount=date?1:28;
+  const zones=[['indoor','Indoor',32],['ac','AC',20],['outdoor','Outdoor',44]],dayCount=date?1:28;
   $('#zone-stats').innerHTML=zones.map(([id,name,capacity])=>{const guests=booked.reduce((s,r)=>s+r.seats.filter(seat=>seat.zone_id===id).reduce((s,seat)=>s+Number(seat.guest_count),0),0);return `<div class="zone-stat"><div><strong>${name}</strong><span>${guests} tamu</span></div><div class="zone-track"><i style="width:${Math.min(100,guests/(capacity*dayCount)*100)}%"></i></div></div>`;}).join('');
   $('#admin-tasks').innerHTML=`<div class="task-row"><span>Verifikasi DP</span><b>${pending.length}</b></div><div class="task-row"><span>Belum pilih menu</span><b>${rows.filter(r=>r.status==='CONFIRMED').length}</b></div><div class="task-row"><span>Tamu dalam hold</span><b>${held}</b></div>`;
   $('#recent-reservations').innerHTML=bookingRows(rows.slice(0,5));bindBookingRows($('#recent-reservations'));
@@ -223,4 +232,3 @@ async function init(){
   const saved=storage.get('teaco-booking',true);if(saved&&state.public?.ready){try{const value=JSON.parse(saved);state.booking=value.booking;state.token=value.token;state.resumeScreen=value.resumeScreen;state.paymentDraft=value.paymentDraft;const result=await request('holds/'+state.booking.id);state.booking=result.reservation;if(state.booking.status==='HOLD'){state.units=result.units;state.selected=result.seats.map(s=>s.unit_id);if(state.resumeScreen==='payment-screen'){state.public.payment=result.payment;renderPayment(result.seats);setScreen('payment-screen');}else{renderSeats();setScreen('seat-screen');}}else if(state.booking.status==='PENDING_PAYMENT'){state.public.payment=result.payment;renderPayment(result.seats);setScreen('payment-screen');}else{renderTicket(result.seats);setScreen('pending-screen');}}catch{storage.remove('teaco-booking',true);state.booking=null;state.token=null;state.resumeScreen=null;state.paymentDraft=null;}}
 }
 init();
-

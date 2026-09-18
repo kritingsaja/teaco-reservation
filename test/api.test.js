@@ -42,13 +42,13 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await call('public')).body.days[0].remaining,65);
   });
   let first,second;
-  await t.test('same table cannot be assigned to two guests and invalid tokens fail',async()=>{
+  await t.test('sections share capacity but cannot be overbooked and invalid tokens fail',async()=>{
     first=(await call('holds',{method:'POST',data:{date:'2027-02-09',guests:4}})).body;
     second=(await call('holds',{method:'POST',data:{date:'2027-02-09',guests:4}})).body;
     assert.equal((await call(`holds/${first.reservation.id}`)).status,403);
-    assert.equal((await call(`holds/${first.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['m1']},token:first.token})).status,400);
-    assert.equal((await call(`holds/${first.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['m12']},token:first.token})).status,200);
-    assert.equal((await call(`holds/${second.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['m12']},token:second.token})).status,409);
+    assert.equal((await call(`holds/${first.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['invalid']},token:first.token})).status,409);
+    assert.equal((await call(`holds/${first.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['indoor-side']},token:first.token})).status,200);
+    assert.equal((await call(`holds/${second.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['indoor-side']},token:second.token})).status,409);
     assert.equal((await call(`holds/${second.reservation.id}`,{method:'DELETE',token:second.token})).status,200);
   });
   await t.test('first local admin is hashed and sessions are HttpOnly; wrong login fails',async()=>{
@@ -60,11 +60,10 @@ test('booking, authentication, capacity and payment use the database end to end'
     const dashboard=await call('admin/dashboard',{admin:true});assert.equal(dashboard.status,200);assert.equal(dashboard.body.menu.length,0);assert.equal(dashboard.body.reservations.length,0);
   });
   let paymentId;
-  await t.test('payment needs configured bank and valid proof; private receipt is stored',async()=>{
+  await t.test('valid receipt can be reviewed even before public bank details are configured',async()=>{
     const payment={name:'Test Pemesan',phone:'081234567890',proof:{name:'test.png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII='}};
     const path=`holds/${first.reservation.id}/payment`;
-    assert.equal((await call(path,{method:'POST',data:payment,token:first.token})).status,503);
-    assert.equal((await call('admin/settings',{method:'PATCH',admin:true,data:{bank_name:'BANK TEST',account_number:'123456789',account_holder:'TEST ONLY'}})).status,200);
+    assert.equal((await call('public')).body.payment.configured,false);
     assert.equal((await call(path,{method:'POST',data:{...payment,proof:{name:'evil.svg',data:Buffer.from('<svg><script>alert(1)</script></svg>').toString('base64')}},token:first.token})).status,400);
     const paid=await call(path,{method:'POST',data:payment,token:first.token});assert.equal(paid.status,200);assert.equal(paid.body.reservation.status,'PENDING_VERIFICATION');
     assert.equal((await call(`holds/${first.reservation.id}/menu`,{token:first.token})).status,409);
@@ -75,7 +74,7 @@ test('booking, authentication, capacity and payment use the database end to end'
   });
   await t.test('guest can save a reservation and resume DP payment with reservation code',async()=>{
     const later=(await call('holds',{method:'POST',data:{date:'2027-02-10',guests:2}})).body;
-    assert.equal((await call(`holds/${later.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['m1']},token:later.token})).status,200);
+    assert.equal((await call(`holds/${later.reservation.id}/seats`,{method:'PATCH',data:{unitIds:['indoor-sofa']},token:later.token})).status,200);
     const saved=await call(`holds/${later.reservation.id}/payment-intent`,{method:'POST',token:later.token,data:{name:'Bayar Nanti',phone:'081234567891',note:'Akan transfer nanti'}});
     assert.equal(saved.status,200);assert.equal(saved.body.reservation.status,'PENDING_PAYMENT');
     const lookup=await call('reservations/lookup',{method:'POST',data:{code:later.reservation.code,phone:'081234567891'}});
@@ -93,7 +92,7 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await call(path+'/menu',{method:'POST',admin:true,data:{items:[{productId:'invented',quantity:4}]}})).status,400);
     assert.equal((await call('admin/menu/sync',{method:'POST',admin:true,data:{}})).status,503);
     const day=(await call('public')).body.days[1];assert.equal(day.booked,4);assert.equal(day.remaining,61);assert.equal(day.held,0);
-    const lookup=await call('reservations/lookup',{method:'POST',data:{code:first.reservation.code,phone:'081234567890'}});assert.equal(lookup.status,200);assert.equal(lookup.body.reservation.status,'CONFIRMED');assert.equal(lookup.body.seats[0].name,'Meja 12');
+    const lookup=await call('reservations/lookup',{method:'POST',data:{code:first.reservation.code,phone:'081234567890'}});assert.equal(lookup.status,200);assert.equal(lookup.body.reservation.status,'CONFIRMED');assert.equal(lookup.body.seats[0].name,'Samping Kasir');
     first.token=lookup.body.token;
     assert.equal((await call('reservations/lookup',{method:'POST',data:{code:first.reservation.code,phone:'081299999999'}})).status,404);
     const publicData=JSON.stringify((await call('public')).body);assert.equal(publicData.includes('Test Pemesan'),false);assert.equal(publicData.includes('081234567890'),false);
@@ -145,11 +144,40 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await call('auth/logout',{method:'POST',admin:true,data:{}})).status,200);
     assert.equal((await call('admin/dashboard',{admin:true})).status,401);
   });
-  await t.test('fully reserved seating never advertises unusable spare quota',async()=>{
-    const units=['m1','m2','m3','m4','m12','m13','m14','m15','ac-right','ac-left','tv','out-right','out-left','tribun'];
-    for(const unit of units){const hold=(await call('holds',{method:'POST',data:{date:'2027-02-11',guests:1}})).body;assert.equal((await call(`holds/${hold.reservation.id}/seats`,{method:'PATCH',data:{unitIds:[unit]},token:hold.token})).status,200);}
-    const day=(await call('public')).body.days.find(d=>d.visit_date==='2027-02-11');assert.equal(day.used,14);assert.equal(day.available_capacity,0);assert.equal(day.remaining,0);
+  await t.test('single AC section fits 20 and daily quota remains 65',async()=>{
+    const units=[['ac',20],['indoor-sofa',10],['indoor-front',16],['indoor-side',6],['out-right',13]];
+    for(const [unit,guests] of units){const hold=(await call('holds',{method:'POST',data:{date:'2027-02-11',guests}})).body;assert.equal((await call(`holds/${hold.reservation.id}/seats`,{method:'PATCH',data:{unitIds:[unit]},token:hold.token})).status,200);}
+    const day=(await call('public')).body.days.find(d=>d.visit_date==='2027-02-11');assert.equal(day.used,65);assert.equal(day.remaining,0);
     assert.equal((await call('holds',{method:'POST',data:{date:'2027-02-11',guests:1}})).status,409);
   });
+  await t.test('partial sections stay bookable and concurrent allocations respect capacity',async()=>{
+    const a=(await call('holds',{method:'POST',data:{date:'2027-02-12',guests:6}})).body;
+    const b=(await call('holds',{method:'POST',data:{date:'2027-02-12',guests:6}})).body;
+    const results=await Promise.all([a,b].map(h=>call(`holds/${h.reservation.id}/seats`,{method:'PATCH',token:h.token,data:{unitIds:['indoor-sofa']}})));
+    assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
+    const small=(await call('holds',{method:'POST',data:{date:'2027-02-12',guests:4}})).body;
+    let units=(await call(`holds/${small.reservation.id}`,{token:small.token})).body.units;
+    assert.equal(units.find(u=>u.id==='indoor-sofa').remaining,4);
+    assert.equal((await call(`holds/${small.reservation.id}/seats`,{method:'PATCH',token:small.token,data:{unitIds:['indoor-sofa']}})).status,200);
+    assert.equal((await call(`holds/${a.reservation.id}`,{token:a.token})).body.units.filter(u=>u.zone_id==='indoor').length,3);
+    const shared=(await call('holds',{method:'POST',data:{date:'2027-02-13',guests:7}})).body;
+    assert.equal((await call(`holds/${shared.reservation.id}/seats`,{method:'PATCH',token:shared.token,data:{unitIds:['ac']}})).status,200);
+    const other=(await call('holds',{method:'POST',data:{date:'2027-02-13',guests:13}})).body;
+    assert.equal((await call(`holds/${other.reservation.id}/seats`,{method:'PATCH',token:other.token,data:{unitIds:['ac']}})).status,200);
+  });
+  await t.test('existing legacy allocations remain intact and count against new availability',async()=>{
+    const db=await getDb();
+    await db.query("INSERT INTO seating_units VALUES ('ac-right','ac','Sisi kanan',10,0)");
+    await db.query("INSERT INTO seating_units VALUES ('m1','indoor','Meja 1',2,0)");
+    const legacy=(await call('holds',{method:'POST',data:{date:'2027-02-14',guests:8}})).body;
+    await db.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',[legacy.reservation.id,'ac-right',6]);
+    await db.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',[legacy.reservation.id,'m1',2]);
+    const fresh=(await call('holds',{method:'POST',data:{date:'2027-02-14',guests:14}})).body;
+    const units=(await call(`holds/${fresh.reservation.id}`,{token:fresh.token})).body.units;
+    assert.equal(units.find(u=>u.id==='ac').remaining,14);
+    assert.equal(units.find(u=>u.id==='indoor-sofa').remaining,8);
+    assert.equal(units.some(u=>u.id==='m1'||u.id==='ac-right'),false);
+    assert.equal((await call(`holds/${fresh.reservation.id}/seats`,{method:'PATCH',token:fresh.token,data:{unitIds:['ac']}})).status,200);
+    assert.equal((await db.query('SELECT * FROM reservation_seats WHERE reservation_id=$1',[legacy.reservation.id])).length,2);
+  });
 });
-

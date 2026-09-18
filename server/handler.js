@@ -1,6 +1,6 @@
 import {randomBytes,randomInt,randomUUID} from 'node:crypto';
 import {getDb,lockDay,expire} from './db.js';
-import {EVENT,ACTIVE_STATUSES,BOOKED_STATUSES,days,localMode} from './config.js';
+import {EVENT,ZONES,ACTIVE_STATUSES,BOOKED_STATUSES,days,localMode} from './config.js';
 import {hash,hashPassword,passwordMatches,bootstrapAdmin,sessionAdmin,createAdmin,issueSession,fail} from './auth.js';
 
 const now=()=>new Date().toISOString();
@@ -31,8 +31,8 @@ async function seatsFor(db,id) {
   return db.query('SELECT s.unit_id,s.guest_count,u.name,z.name AS zone FROM reservation_seats s JOIN seating_units u ON u.id=s.unit_id JOIN zones z ON z.id=u.zone_id WHERE s.reservation_id=$1 ORDER BY z.sort_order,u.sort_order',[id]);
 }
 function publicReservation(r) {
-  const {id,code,visit_date,guest_count,customer_name,note,status,deposit_amount,unique_code,expires_at}=r;
-  return {id,code,visit_date,guest_count,customer_name,note,status,deposit_amount,unique_code,expires_at,total_transfer:deposit_amount+unique_code};
+  const {id,code,visit_date,guest_count,customer_name,phone,note,status,deposit_amount,unique_code,expires_at}=r;
+  return {id,code,visit_date,guest_count,customer_name,phone,note,status,deposit_amount,unique_code,expires_at,total_transfer:deposit_amount+unique_code};
 }
 async function paymentSettings(db) {
   const rows=await db.query("SELECT key,value FROM settings WHERE key IN ('bank_name','account_number','account_holder')");
@@ -40,10 +40,22 @@ async function paymentSettings(db) {
   return {...settings,configured:!!(settings.bank_name&&settings.account_number&&settings.account_holder)};
 }
 async function unitsFor(db,date,exclude='') {
-  return db.query(`SELECT u.*,z.name AS zone_name,z.sort_order AS zone_order,
-    (SELECT COUNT(*) FROM reservation_seats s JOIN reservations r ON r.id=s.reservation_id
-      WHERE s.unit_id=u.id AND r.visit_date=$1 AND r.id<>$2 AND r.status IN (${activeSql})) AS occupied
-    FROM seating_units u JOIN zones z ON z.id=u.zone_id ORDER BY z.sort_order,u.sort_order`,[date,exclude]);
+  const usage=await db.query(`SELECT s.unit_id,u.zone_id,SUM(s.guest_count) AS guests
+    FROM reservation_seats s JOIN reservations r ON r.id=s.reservation_id JOIN seating_units u ON u.id=s.unit_id
+    WHERE r.visit_date=$1 AND r.id<>$2 AND r.status IN (${activeSql}) GROUP BY s.unit_id,u.zone_id`,[date,exclude]);
+  return sectionAvailability(usage);
+}
+function sectionAvailability(usage) {
+  return ZONES.flatMap((zone,zone_order)=>{
+    const ids=new Set(zone.units.map(u=>u[0]));
+    // Preserve historical table allocations. Unknown old indoor positions reserve
+    // space conservatively in every section until they expire; never relocate a guest.
+    const legacy=usage.filter(u=>u.zone_id===zone.id&&!ids.has(u.unit_id)).reduce((s,u)=>s+Number(u.guests),0);
+    return zone.units.map(([id,name,capacity])=>{
+      const occupied=Number(usage.find(u=>u.unit_id===id)?.guests||0)+legacy;
+      return {id,name,capacity,zone_id:zone.id,zone_name:zone.name,zone_order,occupied,remaining:Math.max(0,capacity-occupied)};
+    });
+  });
 }
 async function audit(tx,admin,id,action) {await tx.query('INSERT INTO audit_log VALUES ($1,$2,$3,$4,$5)',[randomUUID(),admin?.id||null,id,action,now()]);}
 const menuDeadline=r=>r.visit_date+'T07:00:00+07:00';
@@ -122,11 +134,14 @@ export default async function handler(req,res) {
         COALESCE(SUM(CASE WHEN r.status IN (${activeSql}) THEN r.guest_count ELSE 0 END),0) AS used,
         COALESCE(SUM(CASE WHEN r.status IN (${BOOKED_STATUSES.map(x=>`'${x}'`).join(',')}) THEN r.guest_count ELSE 0 END),0) AS booked,
         COALESCE(SUM(CASE WHEN r.status IN ('HOLD','PENDING_PAYMENT','PENDING_VERIFICATION') THEN r.guest_count ELSE 0 END),0) AS held,
-        (SELECT COALESCE(SUM(u.capacity),0) FROM seating_units u WHERE NOT EXISTS
-          (SELECT 1 FROM reservation_seats s JOIN reservations rr ON rr.id=s.reservation_id WHERE s.unit_id=u.id AND rr.visit_date=d.visit_date AND rr.status IN (${activeSql}))) AS available_capacity,
+        (SELECT COALESCE(SUM(s.guest_count),0) FROM reservation_seats s JOIN reservations rr ON rr.id=s.reservation_id WHERE rr.visit_date=d.visit_date AND rr.status IN (${activeSql})) AS allocated_guests,
         (SELECT COALESCE(SUM(rr.guest_count),0) FROM reservations rr WHERE rr.visit_date=d.visit_date AND rr.status IN (${activeSql}) AND NOT EXISTS (SELECT 1 FROM reservation_seats s WHERE s.reservation_id=rr.id)) AS unallocated_guests
         FROM event_days d LEFT JOIN reservations r ON r.visit_date=d.visit_date GROUP BY d.visit_date ORDER BY d.visit_date`);
-      return send(res,200,{ready:true,event:EVENT,days:rows.map(row=>({...row,used:Number(row.used),remaining:Math.max(0,Math.min(EVENT.daily_capacity-Number(row.used),Number(row.available_capacity)-Number(row.unallocated_guests))),booked:Number(row.booked),held:Number(row.held)})),payment:await paymentSettings(db)});
+      const usage=await db.query(`SELECT r.visit_date,s.unit_id,u.zone_id,SUM(s.guest_count) AS guests FROM reservation_seats s JOIN reservations r ON r.id=s.reservation_id JOIN seating_units u ON u.id=s.unit_id WHERE r.status IN (${activeSql}) GROUP BY r.visit_date,s.unit_id,u.zone_id`);
+      return send(res,200,{ready:true,event:EVENT,days:rows.map(row=>{
+        const available=sectionAvailability(usage.filter(u=>u.visit_date===row.visit_date)).reduce((s,u)=>s+u.remaining,0);
+        return {...row,used:Number(row.used),available_capacity:available,remaining:Math.max(0,Math.min(EVENT.daily_capacity-Number(row.used),available-Number(row.unallocated_guests))),booked:Number(row.booked),held:Number(row.held)};
+      }),payment:await paymentSettings(db)});
     }
     const db=await getDb();
     if(path.startsWith('auth/')) {
@@ -175,7 +190,7 @@ export default async function handler(req,res) {
         await lockDay(tx,date);await expire(tx,date);
         const used=Number((await tx.query(`SELECT COALESCE(SUM(guest_count),0) AS total FROM reservations WHERE visit_date=$1 AND status IN (${activeSql})`,[date]))[0].total);
         if(used+count>EVENT.daily_capacity)fail('Kursi tidak cukup. Pilih tanggal atau jumlah tamu lain.',409);
-        const available=(await unitsFor(tx,date)).filter(u=>!Number(u.occupied)).reduce((sum,u)=>sum+Number(u.capacity),0);
+        const available=(await unitsFor(tx,date)).reduce((sum,u)=>sum+u.remaining,0);
         const unallocated=Number((await tx.query(`SELECT COALESCE(SUM(r.guest_count),0) AS guests FROM reservations r WHERE r.visit_date=$1 AND r.status IN (${activeSql}) AND NOT EXISTS (SELECT 1 FROM reservation_seats s WHERE s.reservation_id=r.id)`,[date]))[0].guests);
         if(count>available-unallocated)fail('Tempat duduk tidak cukup pada tanggal ini.',409);
         const usedCodes=new Set((await tx.query(`SELECT unique_code FROM reservations WHERE visit_date=$1 AND status IN (${activeSql})`,[date])).map(x=>Number(x.unique_code)));
@@ -208,11 +223,11 @@ export default async function handler(req,res) {
           if(!ids.length)fail('Pilih tempat duduk terlebih dahulu.');
           const units=await unitsFor(tx,r.visit_date,id);
           const chosen=ids.map(id=>units.find(u=>u.id===id));
-          if(chosen.some(u=>!u||Number(u.occupied)>0))fail('Tempat sudah dipilih reservasi lain. Pilih kembali.',409);
-          if(chosen.reduce((sum,u)=>sum+Number(u.capacity),0)<r.guest_count)fail('Kapasitas tempat belum cukup.');
+          if(chosen.some(u=>!u||u.remaining<=0))fail('Seksi sudah penuh. Pilih tempat lain.',409);
+          if(chosen.reduce((sum,u)=>sum+u.remaining,0)<r.guest_count)fail('Sisa tempat di seksi pilihan tidak cukup. Pilih seksi lain atau gabungkan beberapa seksi.',409);
           await tx.query('DELETE FROM reservation_seats WHERE reservation_id=$1',[id]);
           let rest=r.guest_count;
-          for(const unit of chosen){if(!rest)break;const qty=Math.min(rest,Number(unit.capacity));await tx.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',[id,unit.id,qty]);rest-=qty;}
+          for(const unit of chosen){if(!rest)break;const qty=Math.min(rest,unit.remaining);await tx.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',[id,unit.id,qty]);rest-=qty;}
           return r;
         }
         if(action==='payment-intent'&&method==='POST') {
@@ -227,7 +242,8 @@ export default async function handler(req,res) {
         }
         if(action==='payment'&&method==='POST') {
           if(!['HOLD','PENDING_PAYMENT'].includes(r.status))fail('Bukti sudah diterima atau reservasi sudah dikonfirmasi.',409);
-          if(!(await paymentSettings(tx)).configured)fail('Rekening pembayaran belum diatur admin.',503);
+          // Receipts from transfers arranged with the admin can still be reviewed
+          // when the public bank details have not been configured yet.
           if(!(await seatsFor(tx,id)).length)fail('Pilih tempat duduk dahulu.');
           const name=clean(data.name,100),number=phone(data.phone);
           if(name.length<2||!/^62\d{8,13}$/.test(number))fail('Isi nama dan nomor WhatsApp yang valid.');
@@ -246,7 +262,7 @@ export default async function handler(req,res) {
       const r=(await db.query('SELECT * FROM reservations WHERE code=$1 AND phone=$2',[clean(data.code,40).toUpperCase(),phone(data.phone)]))[0];
       if(!r)fail('Kode reservasi atau nomor WhatsApp tidak cocok.',404);
       const token=randomBytes(32).toString('hex');await db.query('UPDATE reservations SET token_hash=$1 WHERE id=$2',[hash(token),r.id]);
-      return send(res,200,{reservation:publicReservation(r),seats:await seatsFor(db,r.id),token});
+      return send(res,200,{reservation:publicReservation(r),seats:await seatsFor(db,r.id),payment:await paymentSettings(db),token});
     }
     if(path.startsWith('admin/')) {
       const admin=await sessionAdmin(db,req);if(!admin)fail('Silakan login admin.',401);
@@ -310,4 +326,3 @@ export default async function handler(req,res) {
     send(res,status,{error:status===500?'Layanan belum dapat diakses. Coba lagi.':error.message,code:error.code});
   }
 }
-

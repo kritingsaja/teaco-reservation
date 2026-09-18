@@ -39,7 +39,7 @@ async function createDb() {
   statements.push({sql:'INSERT INTO events VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING',params:Object.values(EVENT)});
   for(const day of days())statements.push({sql:'INSERT INTO event_days VALUES ($1,$2) ON CONFLICT(visit_date) DO NOTHING',params:[day,EVENT.id]});
   for(const [i,zone] of ZONES.entries()) {
-    statements.push({sql:'INSERT INTO zones VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING',params:[zone.id,EVENT.id,zone.name,zone.capacity,i]});
+    statements.push({sql:'INSERT INTO zones VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,capacity=excluded.capacity,sort_order=excluded.sort_order',params:[zone.id,EVENT.id,zone.name,zone.capacity,i]});
     for(const [j,[id,name,capacity]] of zone.units.entries())statements.push({sql:'INSERT INTO seating_units VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING',params:[id,zone.id,name,capacity,j]});
   }
   try {
