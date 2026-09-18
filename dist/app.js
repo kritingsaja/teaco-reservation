@@ -41,9 +41,12 @@ function renderCalendar(){
   for(let d=1;d<=count;d++){
     const date=`2027-${String(month).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const day=state.public?.days.find(day=>day.visit_date===date),outside=!day,ready=state.public?.ready&&day?.remaining!==null;
-    html+=`<button class="date ${outside?'outside':ready&&day.remaining===0?'full':ready&&day.remaining<=10?'limited':''}" data-date="${date}" ${outside||!ready||day.remaining===0?'disabled':''} aria-label="${dateText(date)}${day?`, ${ready?day.remaining+' kursi tersedia':'belum tersedia'}`:''}"><strong>${d}</strong>${outside?'':`<small>${ready?(day.remaining===0?'Penuh':`${day.remaining} kursi`):'—'}</small>`}</button>`;
+    const availability=outside?'outside':!ready?'unavailable':day.remaining===0?'full':day.remaining<=10?'limited':day.remaining<state.public.event.daily_capacity?'partial':'available';
+    const statusText={available:'Kosong',partial:'Terisi sebagian',limited:'Hampir penuh',full:'Penuh',unavailable:'Belum tersedia',outside:'Di luar periode'}[availability];
+    html+=`<button class="date ${availability}" data-date="${date}" ${outside||!ready||day.remaining===0?'disabled':''} aria-label="${dateText(date)}, ${statusText}${ready&&!outside?`, ${day.remaining} kursi tersisa`:''}"><strong>${d}</strong>${outside?'':`<small>${ready?(day.remaining===0?'Penuh':`${day.remaining} kursi`):'—'}</small><span class="date-indicator" aria-hidden="true">${availability==='full'?icon('lock'):availability==='unavailable'?'—':''}</span>`}</button>`;
   }
   $('#calendar').innerHTML=html;$('#calendar').setAttribute('aria-busy','false');
+  $('.calendar-foot').innerHTML='<span><i class="legend-dot available"></i>Kosong</span><span><i class="legend-dot partial"></i>Terisi sebagian</span><span><i class="legend-dot limited"></i>Hampir penuh</span><span><i class="legend-dot full"></i>Penuh</span><p>Angka menunjukkan sisa kursi.</p>';
   $$('#calendar button:not(:disabled)').forEach(button=>button.addEventListener('click',()=>{state.selectedDate=button.dataset.date;$('#selected-date-label').textContent=dateText(state.selectedDate);$('#guest-error').textContent='';$('#guest-count').value=state.guests;updateGuestCount();openDialog('guest-dialog');}));
 }
 function updateGuestCount(){
@@ -82,8 +85,9 @@ function renderSeats(){
   const selected=allocations().result;
   $('#seat-map').className='seat-map '+state.zone;
   $('#seat-map').innerHTML=state.units.filter(u=>u.zone_id===state.zone).map(unit=>{
-    const chosen=selected.some(s=>s.id===unit.id),occupied=Number(unit.occupied)>0;
-    return `<button class="seat ${chosen?'selected':''} ${occupied?'occupied':''}" data-unit="${unit.id}" aria-pressed="${chosen}" ${occupied?'disabled':''}>${icon('seat')}<strong>${escape(unit.name)}</strong><small>${occupied?'Terisi':unit.capacity+' kursi'}</small>${chosen?icon('check','seat-check'):''}</button>`;
+    const occupied=Number(unit.occupied)>0,chosen=!occupied&&selected.some(s=>s.id===unit.id);
+    const statusText=occupied?'Terisi':chosen?'Dipilih':'Kosong';
+    return `<button class="seat ${chosen?'selected':occupied?'occupied':'available'}" data-unit="${unit.id}" aria-label="${escape(unit.name)}, ${unit.capacity} kursi, ${statusText}" aria-pressed="${chosen}" ${occupied?'disabled':''}>${icon(occupied?'lock':'seat')}<strong>${escape(unit.name)}</strong><small>${unit.capacity} kursi</small><span class="seat-status">${statusText}</span>${chosen?icon('check','seat-check'):''}</button>`;
   }).join('');
   $$('#seat-map button:not(:disabled)').forEach(button=>button.addEventListener('click',()=>{const id=button.dataset.unit;if(state.selected.includes(id))state.selected=state.selected.filter(x=>x!==id);else if(state.selected.reduce((sum,id)=>sum+Number(state.units.find(u=>u.id===id)?.capacity||0),0)>=state.booking.guest_count)state.selected=[id];else state.selected.push(id);renderSeats();}));
   const {result,rest}=allocations();$('#selection').textContent=result.length?result.map(s=>s.name).join(' + '):'Belum ada';
