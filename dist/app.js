@@ -5,7 +5,7 @@ const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 const money=value=>new Intl.NumberFormat('id-ID',{style:'currency',currency:'IDR',maximumFractionDigits:0}).format(value);
 const dateText=(date,short=false)=>new Intl.DateTimeFormat('id-ID',{...(short?{}:{weekday:'long'}),day:'numeric',month:short?'short':'long',...(short?{}:{year:'numeric'}),timeZone:'Asia/Jakarta'}).format(new Date(date+'T12:00:00+07:00'));
 const storage={get(key,session=false){try{return(session?sessionStorage:localStorage).getItem(key);}catch{return null;}},set(key,value,session=false){try{(session?sessionStorage:localStorage).setItem(key,value);}catch{}},remove(key,session=false){try{(session?sessionStorage:localStorage).removeItem(key);}catch{}}};
-const state={public:null,month:1,selectedDate:null,guests:4,booking:null,token:null,units:[],selected:[],zone:'indoor',split:false,admin:null,setup:false,tab:'overview',guestMenu:null};
+const state={public:null,month:1,selectedDate:null,guests:4,booking:null,token:null,units:[],selected:[],zone:'indoor',split:false,admin:null,setup:false,tab:'overview',guestMenu:null,resumeScreen:null,paymentDraft:null};
 const bookedStatuses=['CONFIRMED','MENU_SELECTED','CHECKED_IN','DONE'];
 const statusLabels={HOLD:'Tempat disimpan',PENDING_PAYMENT:'Menunggu DP',PENDING_VERIFICATION:'Perlu verifikasi',CONFIRMED:'Dikonfirmasi',MENU_SELECTED:'Menu final',CHECKED_IN:'Hadir',DONE:'Selesai',EXPIRED:'Kedaluwarsa',CANCELLED:'Dibatalkan'};
 const badge=status=>`<span class="status-badge ${status==='PENDING_VERIFICATION'?'pending':bookedStatuses.includes(status)?'confirmed':['EXPIRED','CANCELLED'].includes(status)?'expired':''}">${escape(statusLabels[status]||status)}</span>`;
@@ -21,11 +21,11 @@ async function busy(button,fn){if(button.classList.contains('is-loading'))return
 function setTheme(theme){document.documentElement.dataset.theme=theme;$('#theme-toggle').innerHTML=icon(theme==='dark'?'sun':'moon');$('#theme-toggle').setAttribute('aria-label',`Ubah ke ${theme==='dark'?'light':'dark'} mode`);$('meta[name="theme-color"]').content=theme==='dark'?'#1b1411':'#f4ede7';}
 setTheme(storage.get('teaco-theme')==='light'?'light':'dark');
 $('#theme-toggle').addEventListener('click',()=>{const theme=document.documentElement.dataset.theme==='dark'?'light':'dark';setTheme(theme);storage.set('teaco-theme',theme);});
-function setScreen(id){$$('.screen').forEach(s=>s.classList.toggle('active',s.id===id));const step={ 'date-screen':1,'seat-screen':2,'payment-screen':3 }[id];$('#steps').hidden=!step;$$('[data-step]').forEach(el=>{el.classList.toggle('current',Number(el.dataset.step)===step);el.classList.toggle('done',Number(el.dataset.step)<step);});$('#app-shell').classList.toggle('admin-shell',id==='admin-screen');window.scrollTo({top:0,behavior:'instant'});if(!['admin-screen','login-screen'].includes(id))history.replaceState(null,'','#/');}
+function setScreen(id){$$('.screen').forEach(s=>s.classList.toggle('active',s.id===id));const step={ 'date-screen':1,'seat-screen':2,'payment-screen':3 }[id];$('#steps').hidden=!step;$$('[data-step]').forEach(el=>{el.classList.toggle('current',Number(el.dataset.step)===step);el.classList.toggle('done',Number(el.dataset.step)<step);});$('#app-shell').classList.toggle('admin-shell',id==='admin-screen');if(state.booking&&['seat-screen','payment-screen','pending-screen','guest-menu-screen'].includes(id)){state.resumeScreen=id;saveBooking();}window.scrollTo({top:0,behavior:'instant'});if(!['admin-screen','login-screen'].includes(id))history.replaceState(null,'','#/');}
 function openDialog(id){$('#'+id).showModal();}
 $$('.close-dialog').forEach(button=>button.addEventListener('click',()=>button.closest('dialog').close()));
 $$('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();}}));
-function saveBooking(){storage.set('teaco-booking',JSON.stringify({booking:state.booking,token:state.token}),true);}
+function saveBooking(){storage.set('teaco-booking',JSON.stringify({booking:state.booking,token:state.token,resumeScreen:state.resumeScreen,paymentDraft:state.paymentDraft}),true);}
 
 async function loadCalendar(){
   try{state.public=await request('public');$('#service-notice').hidden=state.public.ready;$('#service-notice').textContent='Reservasi belum dibuka. Sistem sedang disiapkan.';}
@@ -103,21 +103,28 @@ function renderPayment(seats=allocations().result){
   const r=state.booking;$('#payment-summary').innerHTML=row('Tanggal',dateText(r.visit_date,true))+row('Jumlah tamu',r.guest_count+' orang')+row('Tempat',seats.map(s=>s.name).join(' + '))+row('DP',money(r.deposit_amount))+row('Kode unik',String(r.unique_code).padStart(3,'0'));
   $('#total-transfer').textContent=money(r.total_transfer);const bank=state.public?.payment;
   $('#bank-details').innerHTML=bank?.configured?`<small>Transfer ke</small><strong>${escape(bank.bank_name)}</strong><strong class="account-number">${escape(bank.account_number)}</strong><small>a.n. ${escape(bank.account_holder)}</small>`:'<h2>Pembayaran belum tersedia</h2><p class="muted" style="margin:8px 0 0">Admin belum mengatur rekening DP.</p>';
+  const draft=state.paymentDraft||{};$('#customer-name').value=draft.name||r.customer_name||'';$('#customer-phone').value=draft.phone||'';$('#payment-form [name=note]').value=draft.note||r.note||'';
   $('#submit-payment').disabled=!bank?.configured;$('#payment-error').textContent='';
 }
+function rememberPaymentDraft(){state.paymentDraft={name:$('#customer-name').value,phone:$('#customer-phone').value,note:$('#payment-form [name=note]').value};saveBooking();}
+['#customer-name','#customer-phone','#payment-form [name=note]'].forEach(selector=>$(selector).addEventListener('input',rememberPaymentDraft));
 $('#payment-proof').addEventListener('change',event=>{const file=event.target.files[0];$('#file-name').textContent=file?.name||'Pilih bukti transfer';$('#payment-error').textContent=file&&file.size>2*1024*1024?'File terlalu besar. Maksimal 2 MB.':'';});
 const readProof=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve({name:file.name,data:reader.result.split(',')[1]});reader.onerror=()=>reject(new Error('File belum dapat dibaca.'));reader.readAsDataURL(file);});
 $('#payment-form').addEventListener('submit',event=>{event.preventDefault();busy($('#submit-payment'),async()=>{
-  try{const file=$('#payment-proof').files[0];if(!file||file.size>2*1024*1024)throw new Error('Pilih bukti DP maksimal 2 MB.');const data=Object.fromEntries(new FormData(event.target));data.proof=await readProof(file);const result=await post(`holds/${state.booking.id}/payment`,data);state.booking=result.reservation;saveBooking();renderTicket(result.seats);setScreen('pending-screen');await loadCalendar();}
+  try{const file=$('#payment-proof').files[0];if(!file||file.size>2*1024*1024)throw new Error('Pilih bukti DP maksimal 2 MB.');rememberPaymentDraft();const data=Object.fromEntries(new FormData(event.target));data.proof=await readProof(file);const result=await post(`holds/${state.booking.id}/payment`,data);state.booking=result.reservation;state.paymentDraft=null;saveBooking();renderTicket(result.seats);setScreen('pending-screen');await loadCalendar();}
   catch(error){$('#payment-error').textContent=error.message;}
 });});
+$('#save-payment-later').addEventListener('click',()=>busy($('#save-payment-later'),async()=>{
+  try{rememberPaymentDraft();const data=state.paymentDraft;if(data.name.trim().length<2||!data.phone.trim())throw new Error('Isi nama dan nomor WhatsApp terlebih dahulu.');const result=await post(`holds/${state.booking.id}/payment-intent`,data);state.booking=result.reservation;saveBooking();renderTicket(result.seats);setScreen('pending-screen');await loadCalendar();}
+  catch(error){$('#payment-error').textContent=error.message;}
+}));
 function renderTicket(seats=[]){
   const r=state.booking;if(!r)return;const confirmed=bookedStatuses.includes(r.status),canMenu=['CONFIRMED','MENU_SELECTED'].includes(r.status);
   $('#status-label').textContent=confirmed?'RESERVASI DIKONFIRMASI':r.status==='PENDING_PAYMENT'?'BUKTI PERLU DIPERBAIKI':r.status==='EXPIRED'?'RESERVASI KEDALUWARSA':'BUKTI DP DITERIMA';
-  $('#pending-title').textContent=r.status==='MENU_SELECTED'?'Menu sudah tersimpan.':confirmed?'DP sudah dikonfirmasi.':r.status==='PENDING_PAYMENT'?'Kirim ulang bukti DP':r.status==='EXPIRED'?'Waktu pembayaran habis':'Menunggu verifikasi';
-  $('#status-description').textContent=canMenu?(r.status==='MENU_SELECTED'?'Pilihanmu dapat diubah sampai 07.00 WIB hari kunjungan.':'Sekarang kamu bisa memilih menu untuk rombonganmu.'):confirmed?'Sampai bertemu saat berbuka di TEACO.':r.status==='PENDING_PAYMENT'?'Admin belum menyetujui bukti sebelumnya.':r.status==='EXPIRED'?'Silakan buat reservasi baru.':'Menu akan terbuka setelah admin menyetujui DP.';
+  $('#pending-title').textContent=r.status==='MENU_SELECTED'?'Menu sudah tersimpan.':confirmed?'DP sudah dikonfirmasi.':r.status==='PENDING_PAYMENT'?'Reservasi disimpan.':r.status==='EXPIRED'?'Waktu pembayaran habis':'Menunggu verifikasi';
+  $('#status-description').textContent=canMenu?(r.status==='MENU_SELECTED'?'Pilihanmu dapat diubah sampai 07.00 WIB hari kunjungan.':'Sekarang kamu bisa memilih menu untuk rombonganmu.'):confirmed?'Sampai bertemu saat berbuka di TEACO.':r.status==='PENDING_PAYMENT'?'Kirim DP sekarang, atau buka lagi lewat “Reservasi saya” menggunakan kode dan WhatsApp.':r.status==='EXPIRED'?'Silakan buat reservasi baru.':'Menu akan terbuka setelah admin menyetujui DP.';
   $('#booking-code').textContent=r.code;$('#ticket-details').innerHTML=row('Tanggal',dateText(r.visit_date,true))+row('Tamu',r.guest_count+' orang')+row('Tempat',seats.map(s=>s.name).join(' + '));$('#reupload-proof').hidden=r.status!=='PENDING_PAYMENT';
-  $('#open-guest-menu').hidden=!canMenu;$('#open-guest-menu').innerHTML=(r.status==='MENU_SELECTED'?'Lihat / ubah menu':'Pilih menu')+' '+icon('arrow');
+  $('#open-guest-menu').hidden=!canMenu;$('#open-guest-menu').innerHTML=(r.status==='MENU_SELECTED'?'Lihat / ubah menu':'Pilih menu')+' '+icon('arrow');$('#reupload-proof').hidden=r.status!=='PENDING_PAYMENT';$('#reupload-proof').innerHTML=(r.status==='PENDING_PAYMENT'?'Lanjutkan pembayaran':'Kirim ulang bukti DP')+' '+icon('arrow');
 }
 async function openGuestMenu(){
   try{state.guestMenu=await request(`holds/${state.booking.id}/menu`);state.booking=state.guestMenu.reservation;saveBooking();renderGuestMenu();setScreen('guest-menu-screen');}
@@ -152,10 +159,12 @@ $('#refresh-booking').addEventListener('click',()=>busy($('#refresh-booking'),as
 $('#copy-code').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(state.booking.code);toast('Kode disalin.');}catch{toast('Kode: '+state.booking.code);}});
 $('#new-booking').addEventListener('click',()=>{state.booking=null;state.token=null;storage.remove('teaco-booking',true);setScreen('date-screen');loadCalendar();});
 $('.brand').addEventListener('click',async event=>{event.preventDefault();await releaseHold();setScreen('date-screen');loadCalendar();});
-$('#reupload-proof').addEventListener('click',async()=>{try{const result=await request('holds/'+state.booking.id);state.public.payment=result.payment;renderPayment(result.seats);$('#customer-name').value=state.booking.customer_name||'';setScreen('payment-screen');}catch(error){toast(error.message);}});
+$('#reupload-proof').addEventListener('click',async()=>{try{const result=await request('holds/'+state.booking.id);state.booking=result.reservation;state.public.payment=result.payment;renderPayment(result.seats);setScreen('payment-screen');}catch(error){toast(error.message);}});
 $$('[data-back]').forEach(button=>button.addEventListener('click',async()=>{try{if(button.dataset.back==='date-screen'){await releaseHold();setScreen('date-screen');loadCalendar();}else{await loadSeats();setScreen(button.dataset.back);}}catch(error){toast(error.message);}}));
 $('#open-lookup').addEventListener('click',()=>{$('#lookup-error').textContent='';openDialog('lookup-dialog');});
-$('#lookup-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{const result=await post('reservations/lookup',Object.fromEntries(new FormData(event.target)));state.booking=result.reservation;state.token=result.token;saveBooking();renderTicket(result.seats);$('#lookup-dialog').close();setScreen('pending-screen');}catch(error){$('#lookup-error').textContent=error.message;}});});
+$('#open-guide').addEventListener('click',()=>openDialog('guide-dialog'));
+$('#guide-to-book').addEventListener('click',()=>$('#guide-dialog').close());
+$('#lookup-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{const form=new FormData(event.target),phone=form.get('phone'),result=await post('reservations/lookup',Object.fromEntries(form));state.booking=result.reservation;state.token=result.token;state.paymentDraft={name:result.reservation.customer_name||'',phone,note:result.reservation.note||''};saveBooking();$('#lookup-dialog').close();if(state.booking.status==='PENDING_PAYMENT'){renderPayment(result.seats);setScreen('payment-screen');toast('Lanjutkan dengan unggah bukti DP.');}else{renderTicket(result.seats);setScreen('pending-screen');}}catch(error){$('#lookup-error').textContent=error.message;}});});
 
 async function openAdmin(){
   history.replaceState(null,'','#/admin');
@@ -211,6 +220,7 @@ window.addEventListener('hashchange',()=>{if(location.hash.startsWith('#/admin')
 async function init(){
   await loadCalendar();
   if(location.hash.startsWith('#/admin')){const tab=location.hash.split('/')[2];if(['overview','reservations','menus','settings','data'].includes(tab))state.tab=tab;return openAdmin();}
-  const saved=storage.get('teaco-booking',true);if(saved&&state.public?.ready){try{const value=JSON.parse(saved);state.booking=value.booking;state.token=value.token;const result=await request('holds/'+state.booking.id);state.booking=result.reservation;if(state.booking.status==='HOLD'){state.units=result.units;state.selected=result.seats.map(s=>s.unit_id);renderSeats();setScreen('seat-screen');}else{renderTicket(result.seats);setScreen('pending-screen');}}catch{storage.remove('teaco-booking',true);state.booking=null;state.token=null;}}
+  const saved=storage.get('teaco-booking',true);if(saved&&state.public?.ready){try{const value=JSON.parse(saved);state.booking=value.booking;state.token=value.token;state.resumeScreen=value.resumeScreen;state.paymentDraft=value.paymentDraft;const result=await request('holds/'+state.booking.id);state.booking=result.reservation;if(state.booking.status==='HOLD'){state.units=result.units;state.selected=result.seats.map(s=>s.unit_id);if(state.resumeScreen==='payment-screen'){state.public.payment=result.payment;renderPayment(result.seats);setScreen('payment-screen');}else{renderSeats();setScreen('seat-screen');}}else if(state.booking.status==='PENDING_PAYMENT'){state.public.payment=result.payment;renderPayment(result.seats);setScreen('payment-screen');}else{renderTicket(result.seats);setScreen('pending-screen');}}catch{storage.remove('teaco-booking',true);state.booking=null;state.token=null;state.resumeScreen=null;state.paymentDraft=null;}}
 }
 init();
+
