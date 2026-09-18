@@ -184,7 +184,7 @@ export default async function handler(req,res) {
         await tx.query('INSERT INTO reservations(id,code,token_hash,event_id,visit_date,guest_count,status,deposit_amount,unique_code,expires_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',Object.values(r));return r;
       });return send(res,201,{reservation:publicReservation(r),token});
     }
-    const holdMatch=path.match(/^holds\/([^/]+)(?:\/(seats|payment|menu))?$/);
+    const holdMatch=path.match(/^holds\/([^/]+)(?:\/(seats|payment|payment-intent|menu))?$/);
     if(holdMatch) {
       const [,id,action]=holdMatch;
       if(action==='menu') {
@@ -214,6 +214,16 @@ export default async function handler(req,res) {
           let rest=r.guest_count;
           for(const unit of chosen){if(!rest)break;const qty=Math.min(rest,Number(unit.capacity));await tx.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',[id,unit.id,qty]);rest-=qty;}
           return r;
+        }
+        if(action==='payment-intent'&&method==='POST') {
+          if(!['HOLD','PENDING_PAYMENT'].includes(r.status))fail('Reservasi ini sudah diproses.',409);
+          if(!(await seatsFor(tx,id)).length)fail('Pilih tempat duduk dahulu.');
+          const name=clean(data.name,100),number=phone(data.phone);
+          if(name.length<2||!/^62\d{8,13}$/.test(number))fail('Isi nama dan nomor WhatsApp yang valid.');
+          const paymentDeadline=new Date(Math.min(Date.now()+86400000,Date.parse(r.visit_date+'T17:00:00+07:00'))).toISOString();
+          if(paymentDeadline<=now())fail('Reservasi untuk tanggal ini sudah ditutup.');
+          await tx.query("UPDATE reservations SET customer_name=$1,phone=$2,note=$3,status='PENDING_PAYMENT',expires_at=$4 WHERE id=$5",[name,number,clean(data.note,500),paymentDeadline,id]);
+          return (await tx.query('SELECT * FROM reservations WHERE id=$1',[id]))[0];
         }
         if(action==='payment'&&method==='POST') {
           if(!['HOLD','PENDING_PAYMENT'].includes(r.status))fail('Bukti sudah diterima atau reservasi sudah dikonfirmasi.',409);
@@ -300,3 +310,4 @@ export default async function handler(req,res) {
     send(res,status,{error:status===500?'Layanan belum dapat diakses. Coba lagi.':error.message,code:error.code});
   }
 }
+
