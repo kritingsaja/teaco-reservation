@@ -71,8 +71,8 @@ function allocations(){
   const chosen=state.selected.map(id=>state.units.find(u=>u.id===id)).filter(Boolean);
   if(!chosen.length)return {result:[],rest:state.booking?.guest_count||0};
   const options=state.split?[...chosen,...state.units.filter(u=>Number(u.remaining)>0&&!state.selected.includes(u.id)).sort((a,b)=>Number(b.zone_id===state.zone)-Number(a.zone_id===state.zone))]:chosen;
-  const result=[];let rest=state.booking?.guest_count||0;
-  for(const unit of options){if(rest<=0)break;const guests=Math.min(rest,Number(unit.remaining));if(guests>0){result.push({...unit,guests});rest-=guests;}}
+  const party=state.booking?.guest_count||0,result=[];let rest=party;
+  for(const unit of options){if(rest<=0)break;const available=unit.exclusive&&rest!==party?unit.normal_remaining:unit.remaining;const guests=Math.min(rest,Number(available));if(guests>0){result.push({...unit,guests});rest-=guests;}}
   return {result,rest};
 }
 function renderSeats(){
@@ -81,7 +81,7 @@ function renderSeats(){
   const zones=[{id:'indoor',name:'Indoor'},{id:'ac',name:'AC'},{id:'outdoor',name:'Outdoor'}];
   $('#zone-tabs').innerHTML=zones.map(z=>`<button class="zone-tab ${state.zone===z.id?'active':''}" data-zone="${z.id}" role="tab" aria-selected="${state.zone===z.id}" aria-controls="seat-map">${z.name}</button>`).join('');
   $$('#zone-tabs button').forEach(button=>button.addEventListener('click',()=>{state.zone=button.dataset.zone;renderSeats();}));
-  $('#floor-title').textContent=zones.find(z=>z.id===state.zone).name;$('#floor-caption').textContent=state.zone==='ac'?'Satu area untuk rombonganmu':'Pilih lokasi duduk rombonganmu';
+  $('#floor-title').textContent=zones.find(z=>z.id===state.zone).name;$('#floor-caption').textContent=state.zone==='ac'&&state.units.find(u=>u.id==='ac')?.exclusive?'Seluruh AC untuk rombonganmu':'Pilih lokasi duduk rombonganmu';
   const selected=allocations().result;
   $('#seat-map').className='seat-map section-map '+state.zone;
   $('#seat-map').innerHTML=state.units.filter(u=>u.zone_id===state.zone).map(unit=>{
@@ -89,7 +89,7 @@ function renderSeats(){
     const statusText=full?'Penuh':chosen?'Dipilih':partial?'Masih tersedia':'Kosong';
     return `<button class="seat ${chosen?'selected':full?'occupied':partial?'partial':'available'}" data-unit="${unit.id}" aria-label="${escape(unit.name)}, ${statusText}" aria-pressed="${chosen}" ${full?'disabled':''}>${icon(full?'lock':'seat')}<strong>${escape(unit.name)}</strong><span class="seat-status">${statusText}</span>${chosen?icon('check','seat-check'):''}</button>`;
   }).join('');
-  $$('#seat-map button:not(:disabled)').forEach(button=>button.addEventListener('click',()=>{const id=button.dataset.unit;if(state.selected.includes(id))state.selected=state.selected.filter(x=>x!==id);else if(state.selected.reduce((sum,id)=>sum+Number(state.units.find(u=>u.id===id)?.remaining||0),0)>=state.booking.guest_count)state.selected=[id];else state.selected.push(id);renderSeats();}));
+  $$('#seat-map button:not(:disabled)').forEach(button=>button.addEventListener('click',()=>{const id=button.dataset.unit;if(state.selected.includes(id))state.selected=state.selected.filter(x=>x!==id);else if(state.units.find(u=>u.id===id)?.exclusive||allocations().rest===0)state.selected=[id];else state.selected.push(id);renderSeats();}));
   const {result,rest}=allocations();$('#selection').textContent=result.length?result.map(s=>s.name).join(' + '):'Belum ada';
   $('#selection-detail').textContent=result.length?(rest>0?'Belum cukup untuk rombonganmu. Pilih seksi tambahan atau izinkan pembagian.':result.map(s=>`${s.name}: ${s.guests} orang`).join(' · ')):'';
   $('#to-payment').disabled=!state.selected.length||rest>0||state.booking.status!=='HOLD';updateTimer();

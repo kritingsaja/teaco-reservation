@@ -1,6 +1,6 @@
 import {randomBytes,randomInt,randomUUID} from 'node:crypto';
 import {getDb,lockDay,expire} from './db.js';
-import {EVENT,ZONES,ACTIVE_STATUSES,BOOKED_STATUSES,days,localMode} from './config.js';
+import {EVENT,ZONES,SECTION_RULES,ACTIVE_STATUSES,BOOKED_STATUSES,days,localMode} from './config.js';
 import {hash,hashPassword,passwordMatches,bootstrapAdmin,sessionAdmin,createAdmin,issueSession,fail} from './auth.js';
 
 const now=()=>new Date().toISOString();
@@ -39,21 +39,26 @@ async function paymentSettings(db) {
   const settings=Object.fromEntries(rows.map(row=>[row.key,row.value]));
   return {...settings,configured:!!(settings.bank_name&&settings.account_number&&settings.account_holder)};
 }
-async function unitsFor(db,date,exclude='') {
+async function unitsFor(db,date,exclude='',guests=0) {
   const usage=await db.query(`SELECT s.unit_id,u.zone_id,SUM(s.guest_count) AS guests
     FROM reservation_seats s JOIN reservations r ON r.id=s.reservation_id JOIN seating_units u ON u.id=s.unit_id
     WHERE r.visit_date=$1 AND r.id<>$2 AND r.status IN (${activeSql}) GROUP BY s.unit_id,u.zone_id`,[date,exclude]);
-  return sectionAvailability(usage);
+  return sectionAvailability(usage,guests);
 }
-function sectionAvailability(usage) {
+function sectionAvailability(usage,guests=0) {
   return ZONES.flatMap((zone,zone_order)=>{
     const ids=new Set(zone.units.map(u=>u[0]));
     // Preserve historical table allocations. Unknown old indoor positions reserve
     // space conservatively in every section until they expire; never relocate a guest.
     const legacy=usage.filter(u=>u.zone_id===zone.id&&!ids.has(u.unit_id)).reduce((s,u)=>s+Number(u.guests),0);
-    return zone.units.map(([id,name,capacity])=>{
+    return zone.units.map(([id,name,maxCapacity])=>{
       const occupied=Number(usage.find(u=>u.unit_id===id)?.guests||0)+legacy;
-      return {id,name,capacity,zone_id:zone.id,zone_name:zone.name,zone_order,occupied,remaining:Math.max(0,capacity-occupied)};
+      const rule=SECTION_RULES[id],normal=rule?.normal??maxCapacity;
+      const exclusive=!!rule&&occupied===0&&guests>normal&&guests<=rule.max;
+      const capacity=exclusive?rule.max:normal;
+      return {id,name,capacity,normal_capacity:normal,max_capacity:maxCapacity,exclusive,
+        zone_id:zone.id,zone_name:zone.name,zone_order,occupied,
+        normal_remaining:Math.max(0,normal-occupied),remaining:Math.max(0,capacity-occupied)};
     });
   });
 }
@@ -190,7 +195,7 @@ export default async function handler(req,res) {
         await lockDay(tx,date);await expire(tx,date);
         const used=Number((await tx.query(`SELECT COALESCE(SUM(guest_count),0) AS total FROM reservations WHERE visit_date=$1 AND status IN (${activeSql})`,[date]))[0].total);
         if(used+count>EVENT.daily_capacity)fail('Kursi tidak cukup. Pilih tanggal atau jumlah tamu lain.',409);
-        const available=(await unitsFor(tx,date)).reduce((sum,u)=>sum+u.remaining,0);
+        const available=(await unitsFor(tx,date,'',count)).reduce((sum,u)=>sum+u.remaining,0);
         const unallocated=Number((await tx.query(`SELECT COALESCE(SUM(r.guest_count),0) AS guests FROM reservations r WHERE r.visit_date=$1 AND r.status IN (${activeSql}) AND NOT EXISTS (SELECT 1 FROM reservation_seats s WHERE s.reservation_id=r.id)`,[date]))[0].guests);
         if(count>available-unallocated)fail('Tempat duduk tidak cukup pada tanggal ini.',409);
         const usedCodes=new Set((await tx.query(`SELECT unique_code FROM reservations WHERE visit_date=$1 AND status IN (${activeSql})`,[date])).map(x=>Number(x.unique_code)));
@@ -210,7 +215,7 @@ export default async function handler(req,res) {
       }
       if(method==='GET') {
         await expire(db);const r=await owns(db,id,req);
-        return send(res,200,{reservation:publicReservation(r),seats:await seatsFor(db,id),units:await unitsFor(db,r.visit_date,id),payment:await paymentSettings(db)});
+        return send(res,200,{reservation:publicReservation(r),seats:await seatsFor(db,id),units:await unitsFor(db,r.visit_date,id,r.guest_count),payment:await paymentSettings(db)});
       }
       const data=await body(req);
       const r=await db.transaction(async tx=>{
@@ -221,13 +226,21 @@ export default async function handler(req,res) {
           if(r.status!=='HOLD')fail('Tempat duduk sudah dikunci.',409);
           const ids=Array.isArray(data.unitIds)?[...new Set(data.unitIds)].slice(0,14):[];
           if(!ids.length)fail('Pilih tempat duduk terlebih dahulu.');
-          const units=await unitsFor(tx,r.visit_date,id);
+          const units=await unitsFor(tx,r.visit_date,id,r.guest_count);
           const chosen=ids.map(id=>units.find(u=>u.id===id));
           if(chosen.some(u=>!u||u.remaining<=0))fail('Seksi sudah penuh. Pilih tempat lain.',409);
-          if(chosen.reduce((sum,u)=>sum+u.remaining,0)<r.guest_count)fail('Sisa tempat di seksi pilihan tidak cukup. Pilih seksi lain atau gabungkan beberapa seksi.',409);
-          await tx.query('DELETE FROM reservation_seats WHERE reservation_id=$1',[id]);
           let rest=r.guest_count;
-          for(const unit of chosen){if(!rest)break;const qty=Math.min(rest,unit.remaining);await tx.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',[id,unit.id,qty]);rest-=qty;}
+          const allocations=[];
+          for(const unit of chosen){
+            if(!rest)break;
+            // Expanded capacity is only for the whole party, never a split fragment.
+            const available=unit.exclusive&&rest!==r.guest_count?unit.normal_remaining:unit.remaining;
+            const qty=Math.min(rest,available);
+            if(qty){allocations.push([id,unit.id,qty]);rest-=qty;}
+          }
+          if(rest)fail('Sisa tempat di seksi pilihan tidak cukup. Pilih seksi lain atau gabungkan beberapa seksi.',409);
+          await tx.query('DELETE FROM reservation_seats WHERE reservation_id=$1',[id]);
+          for(const allocation of allocations)await tx.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',allocation);
           return r;
         }
         if(action==='payment-intent'&&method==='POST') {

@@ -4,6 +4,9 @@ export const ZONES = [
   {id:'ac',name:'AC',capacity:20,units:[['ac','AC',20]]},
   {id:'outdoor',name:'Outdoor',capacity:44,units:[['tv','Bawah TV',10],['out-right','Sisi kanan',16],['out-left','Sisi kiri',12],['tribun','Tribun',6]]}
 ];
+// Extra seats require one party using the entire empty section.
+// TV's normal arrangement is 4 + 4; AC's normal shared capacity is 16.
+export const SECTION_RULES = {ac:{normal:16,max:20},tv:{normal:8,max:10}};
 export const ACTIVE_STATUSES = ['HOLD','PENDING_PAYMENT','PENDING_VERIFICATION','CONFIRMED','MENU_SELECTED','CHECKED_IN','DONE'];
 export const BOOKED_STATUSES = ['CONFIRMED','MENU_SELECTED','CHECKED_IN','DONE'];
 export const localMode = () => !process.env.VERCEL && process.env.NODE_ENV !== 'production';

@@ -162,7 +162,7 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await call(`holds/${a.reservation.id}`,{token:a.token})).body.units.filter(u=>u.zone_id==='indoor').length,3);
     const shared=(await call('holds',{method:'POST',data:{date:'2027-02-13',guests:7}})).body;
     assert.equal((await call(`holds/${shared.reservation.id}/seats`,{method:'PATCH',token:shared.token,data:{unitIds:['ac']}})).status,200);
-    const other=(await call('holds',{method:'POST',data:{date:'2027-02-13',guests:13}})).body;
+    const other=(await call('holds',{method:'POST',data:{date:'2027-02-13',guests:9}})).body;
     assert.equal((await call(`holds/${other.reservation.id}/seats`,{method:'PATCH',token:other.token,data:{unitIds:['ac']}})).status,200);
   });
   await t.test('existing legacy allocations remain intact and count against new availability',async()=>{
@@ -172,12 +172,88 @@ test('booking, authentication, capacity and payment use the database end to end'
     const legacy=(await call('holds',{method:'POST',data:{date:'2027-02-14',guests:8}})).body;
     await db.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',[legacy.reservation.id,'ac-right',6]);
     await db.query('INSERT INTO reservation_seats VALUES ($1,$2,$3)',[legacy.reservation.id,'m1',2]);
-    const fresh=(await call('holds',{method:'POST',data:{date:'2027-02-14',guests:14}})).body;
+    const fresh=(await call('holds',{method:'POST',data:{date:'2027-02-14',guests:10}})).body;
     const units=(await call(`holds/${fresh.reservation.id}`,{token:fresh.token})).body.units;
-    assert.equal(units.find(u=>u.id==='ac').remaining,14);
+    assert.equal(units.find(u=>u.id==='ac').remaining,10);
     assert.equal(units.find(u=>u.id==='indoor-sofa').remaining,8);
     assert.equal(units.some(u=>u.id==='m1'||u.id==='ac-right'),false);
     assert.equal((await call(`holds/${fresh.reservation.id}/seats`,{method:'PATCH',token:fresh.token,data:{unitIds:['ac']}})).status,200);
     assert.equal((await db.query('SELECT * FROM reservation_seats WHERE reservation_id=$1',[legacy.reservation.id])).length,2);
+  });
+  async function hold(guests,date='2027-03-01') {
+    const result=await call('holds',{method:'POST',data:{date,guests}});
+    assert.equal(result.status,201);return result.body;
+  }
+  const select=(h,unitIds)=>call(`holds/${h.reservation.id}/seats`,{method:'PATCH',token:h.token,data:{unitIds}});
+  const details=h=>call(`holds/${h.reservation.id}`,{token:h.token});
+  const cancel=h=>call(`holds/${h.reservation.id}`,{method:'DELETE',token:h.token});
+  await t.test('AC 17–20 and TV 9–10 exclusively fit any party up to the maximum',async()=>{
+    for(const [id,normal,max] of [['ac',16,20],['tv',8,10]]) {
+      for(const guests of [1,normal,...Array.from({length:max-normal},(_,i)=>normal+i+1),max+1]) {
+        const h=await hold(guests),unit=(await details(h)).body.units.find(u=>u.id===id);
+        const special=guests>normal&&guests<=max;
+        assert.equal(unit.capacity,special?max:normal);
+        assert.equal(unit.exclusive,special);
+        assert.equal((await select(h,[id])).status,guests>max?409:200);
+        if(guests<=max) {
+          const follower=await hold(1);
+          assert.equal((await details(follower)).body.units.find(u=>u.id===id).remaining,Math.max(0,normal-guests));
+          if(guests>=normal)assert.equal((await select(follower,[id])).status,409);
+          await cancel(follower);
+        }
+        await cancel(h);
+      }
+    }
+  });
+  await t.test('small parties share only AC 16 or TV 4+4; any occupation blocks expansion',async()=>{
+    for(const [id,normal,max] of [['ac',16,20],['tv',8,10]]) {
+      const a=await hold(normal/2),b=await hold(normal/2),big=await hold(max),extra=await hold(1);
+      assert.equal((await select(a,[id])).status,200);
+      let unit=(await details(big)).body.units.find(u=>u.id===id);
+      assert.equal(unit.exclusive,false);assert.equal(unit.remaining,normal/2);
+      assert.equal((await select(big,[id])).status,409);
+      assert.equal((await select(b,[id])).status,200);
+      assert.equal((await select(extra,[id])).status,409);
+      await cancel(a);await cancel(b);
+      assert.equal((await select(big,[id])).status,200);
+      await cancel(big);await cancel(extra);
+    }
+  });
+  await t.test('expanded capacity cannot be used for fragments of a split party',async()=>{
+    for(const [id,guests] of [['ac',20],['tv',10]]) {
+      // Leave just one normal seat in Samping Kasir.
+      const blocker=await hold(5);assert.equal((await select(blocker,['indoor-side'])).status,200);
+      const h=await hold(guests);
+      assert.equal((await select(h,['indoor-side',id])).status,409);
+      assert.equal((await details(h)).body.seats.length,0);
+      assert.equal((await select(h,[id,'indoor-side'])).status,200);
+      const seats=(await details(h)).body.seats;
+      assert.equal(seats.length,1);assert.equal(seats[0].guest_count,guests);
+      await cancel(h);await cancel(blocker);
+    }
+    const large=await hold(21);
+    assert.equal((await select(large,['ac','indoor-side'])).status,200);
+    assert.deepEqual((await details(large)).body.seats.map(s=>[s.unit_id,s.guest_count]).sort(),[['ac',16],['indoor-side',5]]);
+    await cancel(large);
+  });
+  await t.test('concurrent whole-area and shared requests cannot both claim the same area',async()=>{
+    for(const [id,guests] of [['ac',17],['tv',9]]) {
+      const big=await hold(guests),small=await hold(1);
+      const results=await Promise.all([select(big,[id]),select(small,[id])]);
+      assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
+      await cancel(big);await cancel(small);
+    }
+  });
+  await t.test('expiry releases whole-area capacity and calendar uses shared capacity',async()=>{
+    const date='2027-03-02';
+    const empty=(await call('public')).body.days.find(d=>d.visit_date===date);
+    assert.equal(empty.available_capacity,90);
+    const h=await hold(19,date);assert.equal((await select(h,['ac'])).status,200);
+    const day=(await call('public')).body.days.find(d=>d.visit_date===date);
+    assert.equal(day.available_capacity,74);assert.equal(day.remaining,46);
+    const db=await getDb();await db.query('UPDATE reservations SET expires_at=$1 WHERE id=$2',['2000-01-01T00:00:00.000Z',h.reservation.id]);
+    const next=await hold(18,date);
+    assert.equal((await details(next)).body.units.find(u=>u.id==='ac').exclusive,true);
+    assert.equal((await select(next,['ac'])).status,200);await cancel(next);
   });
 });
