@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
 CREATE TABLE IF NOT EXISTS login_attempts (
   attempt_key TEXT PRIMARY KEY, failures INTEGER NOT NULL, expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  token_hash TEXT PRIMARY KEY, admin_id TEXT NOT NULL REFERENCES admin_users(id),
+  expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS password_reset_tokens_admin ON password_reset_tokens(admin_id, expires_at);
 CREATE TABLE IF NOT EXISTS payments (
   id TEXT PRIMARY KEY, reservation_id TEXT NOT NULL REFERENCES reservations(id), amount INTEGER NOT NULL,
   proof_name TEXT NOT NULL, proof_type TEXT NOT NULL, proof_base64 TEXT NOT NULL,

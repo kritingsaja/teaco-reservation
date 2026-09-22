@@ -33,6 +33,7 @@ SQLite lokal **tidak** dipakai di Vercel. Hubungkan PostgreSQL (misalnya Neon me
 
 - `DATABASE_URL`: connection string PostgreSQL.
 - `ADMIN_USERNAME` dan `ADMIN_PASSWORD`: akun admin pertama; password minimal 10 karakter. Hapus `ADMIN_PASSWORD` dari environment setelah akun dibuat.
+- `ADMIN_RESET_EMAIL`, `RESEND_API_KEY`, dan `RESET_FROM_EMAIL`: reset password hanya dikirim ke satu email admin. `RESET_FROM_EMAIL` harus berupa alamat/domain yang telah diverifikasi di Resend.
 - `POS_MENU_URL`, `POS_DRAFT_URL`, `POS_API_TOKEN`: adaptor aplikasi kasir, jika sudah tersedia.
 
 Schema dan data konfigurasi event diinisialisasi secara idempoten dari `server/schema.sql`. Tidak ada seed transaksi, data tamu, rekening atau menu. Tanpa database online, kalender tidak mengarang ketersediaan dan admin tidak menawarkan login palsu. Redeploy sesudah mengatur environment variable.

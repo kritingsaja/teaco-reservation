@@ -8,6 +8,7 @@ const dummyPasswordHash=hashPassword(randomBytes(32).toString('hex'));
 const activeSql=ACTIVE_STATUSES.map(status=>`'${status}'`).join(',');
 const clean=(value,max=200)=>typeof value==='string'?value.trim().slice(0,max):'';
 const phone=value=>clean(value,30).replace(/[^0-9]/g,'').replace(/^0/,'62');
+const email=value=>clean(value,254).toLowerCase();
 const send=(res,status,data)=>{res.statusCode=status;res.setHeader('Content-Type','application/json; charset=utf-8');res.end(JSON.stringify(data));};
 async function body(req) {
   if(req.body&&typeof req.body==='object'&&!Buffer.isBuffer(req.body)) return req.body;
@@ -38,6 +39,14 @@ async function paymentSettings(db) {
   const rows=await db.query("SELECT key,value FROM settings WHERE key IN ('bank_name','account_number','account_holder')");
   const settings=Object.fromEntries(rows.map(row=>[row.key,row.value]));
   return {...settings,configured:!!(settings.bank_name&&settings.account_number&&settings.account_holder)};
+}
+const resetRecipient=()=>email(process.env.ADMIN_RESET_EMAIL||'');
+const resetIsConfigured=()=>!!(resetRecipient()&&process.env.RESEND_API_KEY&&process.env.RESET_FROM_EMAIL);
+const htmlEscape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+async function sendPasswordReset(recipient,token,origin) {
+  const link=`${origin}/#/reset-password?token=${token}`;
+  const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${process.env.RESEND_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({from:process.env.RESET_FROM_EMAIL,to:[recipient],subject:'Reset password admin TEACO',html:`<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>Reset password admin TEACO</h2><p>Kami menerima permintaan untuk membuat password baru.</p><p><a href="${htmlEscape(link)}" style="display:inline-block;padding:12px 18px;background:#a95e43;color:#fff;text-decoration:none;border-radius:8px">Buat password baru</a></p><p>Tautan ini berlaku 15 menit dan hanya dapat digunakan sekali. Jika bukan Anda yang meminta, abaikan email ini.</p></div>`})});
+  if(!response.ok)throw new Error('Layanan email belum dapat mengirim tautan reset.');
 }
 async function unitsFor(db,date,exclude='',guests=0) {
   const usage=await db.query(`SELECT s.unit_id,u.zone_id,SUM(s.guest_count) AS guests
@@ -181,6 +190,46 @@ export default async function handler(req,res) {
           await tx.query('DELETE FROM login_attempts WHERE attempt_key=$1',[key]);await issueSession(tx,admin,res);
           return {admin:{id:admin.id,username:admin.username}};
         });return send(res,result.status||200,result);
+      }
+      if(path==='auth/reset/request'&&method==='POST') {
+        const requested=email(data.email),recipient=resetRecipient();
+        // Keep the same response for an unregistered address to avoid account enumeration.
+        const done={message:'Jika email terdaftar, tautan reset sudah dikirim.'};
+        if(!requested||requested!==recipient)return send(res,200,done);
+        if(!resetIsConfigured())fail('Reset password via email belum diaktifkan. Hubungi pengelola sistem.',503);
+        const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'').split(',')[0].trim();
+        const requestKey=hash(`reset:${ip}:${requested}`),token=randomBytes(32).toString('hex');
+        const result=await db.transaction(async tx=>{
+          const attempts=(await tx.query('SELECT * FROM login_attempts WHERE attempt_key=$1',[requestKey]))[0];
+          if(attempts&&attempts.expires_at>now()&&Number(attempts.failures)>=3)return {status:429};
+          const admin=(await tx.query('SELECT * FROM admin_users LIMIT 1'))[0];
+          if(!admin)return {status:200};
+          const expiry=new Date(Date.now()+15*60*1000).toISOString();
+          await tx.query('DELETE FROM password_reset_tokens WHERE expires_at<$1 OR used_at IS NOT NULL',[now()]);
+          await tx.query('DELETE FROM password_reset_tokens WHERE admin_id=$1',[admin.id]);
+          await tx.query('INSERT INTO password_reset_tokens VALUES ($1,$2,$3,NULL,$4)',[hash(token),admin.id,expiry,now()]);
+          const failures=attempts&&attempts.expires_at>now()?Number(attempts.failures)+1:1;
+          await tx.query('INSERT INTO login_attempts VALUES ($1,$2,$3) ON CONFLICT(attempt_key) DO UPDATE SET failures=excluded.failures,expires_at=excluded.expires_at',[requestKey,failures,new Date(Date.now()+15*60*1000).toISOString()]);
+          return {admin};
+        });
+        if(result.status===429)fail('Terlalu banyak permintaan reset. Coba lagi dalam 15 menit.',429);
+        if(!result.admin)return send(res,200,done);
+        try{await sendPasswordReset(recipient,token,new URL(req.headers.origin).origin);}
+        catch(error){await db.query('DELETE FROM password_reset_tokens WHERE token_hash=$1',[hash(token)]);throw error;}
+        return send(res,200,done);
+      }
+      if(path==='auth/reset/confirm'&&method==='POST') {
+        const token=clean(data.token,128),password=String(data.password||'');
+        if(!/^[a-f0-9]{64}$/.test(token)||password.length<10||password.length>128)fail('Tautan atau password tidak valid. Password minimal 10 karakter.',400);
+        await db.transaction(async tx=>{
+          const reset=(await tx.query('SELECT * FROM password_reset_tokens WHERE token_hash=$1 AND used_at IS NULL AND expires_at>$2',[hash(token),now()]))[0];
+          if(!reset)fail('Tautan reset tidak valid atau sudah kedaluwarsa.',400);
+          await tx.query('UPDATE admin_users SET password_hash=$1 WHERE id=$2',[hashPassword(password),reset.admin_id]);
+          await tx.query('UPDATE password_reset_tokens SET used_at=$1 WHERE token_hash=$2',[now(),hash(token)]);
+          await tx.query('DELETE FROM admin_sessions WHERE admin_id=$1',[reset.admin_id]);
+          await audit(tx,{id:reset.admin_id},null,'ADMIN_PASSWORD_RESET');
+        });
+        return send(res,200,{message:'Password berhasil diperbarui. Silakan masuk kembali.'});
       }
       if(path==='auth/logout'&&method==='POST') {
         const token=(req.headers.cookie||'').match(/teaco_session=([a-f0-9]{64})/)?.[1];if(token)await db.query('DELETE FROM admin_sessions WHERE token_hash=$1',[hash(token)]);
