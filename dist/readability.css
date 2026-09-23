@@ -97,6 +97,7 @@ body {font-size:15px;line-height:1.6}
 .dock-summary small,.dock-summary span {font-size:12px}
 .dock-summary strong {font-size:14px}
 .form-panel label,dialog label,.quantity-label,.guest-note-label {font-size:13px}
+.pos-settings-form{margin-top:18px}.pos-settings-form .muted{margin:0}.pos-settings-form #pos-token-note{margin-top:16px}
 input:not([type=checkbox]):not([type=file]),textarea,select {font-size:16px}
 .summary-row {font-size:13px;gap:16px}
 .total-row small,.total-row>span,.bank-panel small,.status-note,.booking-ticket>small,.login-foot {font-size:12px}
@@ -184,3 +185,4 @@ input:not([type=checkbox]):not([type=file]),textarea,select {font-size:16px}
 .guide-steps b{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--tint);border:1px solid var(--accent);color:var(--accent);font-size:12px}
 .guide-steps strong,.guide-steps small{display:block}.guide-steps strong{font-size:14px}.guide-steps small{margin-top:3px;color:var(--muted);font-size:12px;line-height:1.5}.guide-dialog .primary{width:100%}
 @media(max-width:640px){.reservation-access{margin-top:5px;padding:18px}.reservation-access strong{font-size:14px}.guide-steps{gap:14px}}
+

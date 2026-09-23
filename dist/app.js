@@ -182,7 +182,7 @@ async function openAdmin(){
   setScreen('login-screen');
 }
 $('#open-admin').addEventListener('click',openAdmin);
-+$('#show-password').addEventListener('click',()=>{const field=$('#login-form [name=password]'),hidden=field.type==='password';field.type=hidden?'text':'password';$('#show-password').textContent=hidden?'Sembunyi':'Lihat';$('#show-password').setAttribute('aria-label',hidden?'Sembunyikan password':'Tampilkan password');});
+$('#show-password').addEventListener('click',()=>{const field=$('#login-form [name=password]'),hidden=field.type==='password';field.type=hidden?'text':'password';$('#show-password').textContent=hidden?'Sembunyi':'Lihat';$('#show-password').setAttribute('aria-label',hidden?'Sembunyikan password':'Tampilkan password');});
 $('#open-reset').addEventListener('click',()=>{const form=$('#password-reset-request-form');form.reset();$('#password-reset-request-error').textContent='';openDialog('password-reset-dialog');});
 $('#password-reset-request-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{const result=await post('auth/reset/request',Object.fromEntries(new FormData(event.target)));event.target.reset();$('#password-reset-request-error').textContent=result.message;}catch(error){$('#password-reset-request-error').textContent=error.message;}});});
 function openResetPassword(){const token=new URLSearchParams(location.hash.split('?')[1]||'').get('token')||'';if(!/^[a-f0-9]{64}$/.test(token)){location.hash='#/admin';return;}$('#reset-confirm-form').dataset.token=token;$('#reset-confirm-form').reset();$('#reset-confirm-error').textContent='';setScreen('reset-screen');}
@@ -201,9 +201,12 @@ function renderAdmin(){
   for(const selector of ['#dashboard-date','#reservation-date']){const select=$(selector);if(select.options.length===1)select.innerHTML+=(state.public?.days||[]).map(day=>`<option value="${day.visit_date}">${dateText(day.visit_date,true)}</option>`).join('');}
   renderStats();renderReservationList();
   $('#menu-list').innerHTML=data.menu.length?data.menu.map(p=>`<div class="menu-row"><div><strong>${escape(p.name)}</strong><small>${escape(p.category)} · ID ${escape(p.external_id)}</small></div><span>${money(p.price)}</span></div>`).join(''):empty('Menu belum dihubungkan','Menu akan diambil dari aplikasi kasir, tanpa menu contoh.','list');
-  $('#menu-source').textContent=data.menu.length?`${data.menu.length} produk tersinkron`:'Belum ada menu tersinkron';$('#sync-menu').disabled=!data.posConfigured;
-  $('#menu-integration-note').textContent=data.posConfigured?(data.draftConfigured?'Menu final siap dikirim sebagai draft kasir.':'Menu dapat diambil; endpoint draft kasir belum dihubungkan.'):'Hubungkan API aplikasi kasir untuk mengambil menu dan membuat draft otomatis.';
+  const pos=data.pos||{menu_url:'',draft_url:'',menuConfigured:data.posConfigured,draftConfigured:data.draftConfigured,tokenConfigured:false};
+  $('#menu-source').textContent=data.menu.length?`${data.menu.length} produk tersinkron`:'Belum ada menu tersinkron';$('#sync-menu').disabled=!pos.menuConfigured;
+  $('#menu-integration-note').textContent=pos.menuConfigured?(pos.draftConfigured?'Menu final siap dikirim sebagai draft kasir.':'Menu dapat diambil; endpoint Draft Pilihan belum dihubungkan.'):'Atur API Menu Kasir dan Draft Pilihan melalui tombol “Atur API kasir”.';
   for(const key of ['bank_name','account_number','account_holder'])$('#settings-form').elements[key].value=data.settings[key]||'';
+  $('#pos-settings-form').elements.menu_url.value=pos.menu_url||'';$('#pos-settings-form').elements.draft_url.value=pos.draft_url||'';
+  $('#pos-token-note').textContent=pos.tokenConfigured?'Token API tersimpan aman di Vercel.':'Jika API memerlukan token, tambahkan POS_API_TOKEN sebagai Secret di Vercel.';
   $('#data-status').innerHTML=`<div class="storage-badge">${icon('database')}${data.storage==='turso'?'Turso · SQLite online':'SQLite · database pengujian lokal'}</div><p class="muted">${data.storage==='turso'?'Data tersimpan di Turso dan digunakan bersama oleh semua perangkat.':'Data tersimpan di file .data/teaco.sqlite pada komputer ini. Versi Vercel memerlukan koneksi Turso tersendiri.'}</p>`;
   setAdminTab(state.tab);
 }
@@ -221,6 +224,8 @@ function renderReservationList(){const q=$('#reservation-search').value.toLowerC
 $('#dashboard-date').addEventListener('change',renderStats);['reservation-search','reservation-status','reservation-date'].forEach(id=>$('#'+id).addEventListener(id==='reservation-search'?'input':'change',renderReservationList));
 $('#refresh-admin').addEventListener('click',()=>busy($('#refresh-admin'),async()=>{try{await loadAdmin();toast('Data diperbarui.');}catch(error){if(error.status===401)await openAdmin();else toast(error.message);}}));
 $('#settings-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{await request('admin/settings',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});await loadAdmin();await loadCalendar();toast('Rekening DP disimpan.');}catch(error){toast(error.message);}});});
+$('#open-pos-settings').addEventListener('click',()=>{setAdminTab('settings');requestAnimationFrame(()=>$('#pos-settings-form').scrollIntoView({behavior:'smooth',block:'start'}));});
+$('#pos-settings-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{await request('admin/pos-settings',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});await loadAdmin();toast('Koneksi API kasir disimpan.');}catch(error){toast(error.message);}});});
 $('#sync-menu').addEventListener('click',()=>busy($('#sync-menu'),async()=>{try{const result=await post('admin/menu/sync',{});await loadAdmin();toast(`${result.count} menu dari kasir disinkronkan.`);}catch(error){toast(error.message);}}));
 function openBookingDetail(id){
   const r=state.admin.reservations.find(r=>r.id===id);if(!r)return;
@@ -238,3 +243,4 @@ async function init(){
   const saved=storage.get('teaco-booking',true);if(saved&&state.public?.ready){try{const value=JSON.parse(saved);state.booking=value.booking;state.token=value.token;state.resumeScreen=value.resumeScreen;state.paymentDraft=value.paymentDraft;const result=await request('holds/'+state.booking.id);state.booking=result.reservation;if(state.booking.status==='HOLD'){state.units=result.units;state.selected=result.seats.map(s=>s.unit_id);if(state.resumeScreen==='payment-screen'){state.public.payment=result.payment;renderPayment(result.seats);setScreen('payment-screen');}else{renderSeats();setScreen('seat-screen');}}else if(state.booking.status==='PENDING_PAYMENT'){state.public.payment=result.payment;renderPayment(result.seats);setScreen('payment-screen');}else{renderTicket(result.seats);setScreen('pending-screen');}}catch{storage.remove('teaco-booking',true);state.booking=null;state.token=null;state.resumeScreen=null;state.paymentDraft=null;}}
 }
 init();
+

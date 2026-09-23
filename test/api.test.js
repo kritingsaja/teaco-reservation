@@ -109,7 +109,10 @@ test('booking, authentication, capacity and payment use the database end to end'
     });
     await new Promise(resolve=>cashier.listen(0,'127.0.0.1',resolve));
     const url=`http://127.0.0.1:${cashier.address().port}`;
-    process.env.POS_MENU_URL=url+'/menu';process.env.POS_DRAFT_URL=url+'/draft';
+    assert.equal((await call('admin/pos-settings',{method:'PATCH',data:{menu_url:url+'/menu',draft_url:url+'/draft'}})).status,401);
+    assert.equal((await call('admin/pos-settings',{method:'PATCH',admin:true,data:{menu_url:'not-a-url',draft_url:''}})).status,400);
+    const configured=await call('admin/pos-settings',{method:'PATCH',admin:true,data:{menu_url:url+'/menu',draft_url:url+'/draft'}});
+    assert.equal(configured.status,200);assert.equal(configured.body.pos.menu_url,url+'/menu');assert.equal(configured.body.pos.draft_url,url+'/draft');
     try{
       assert.equal((await call('admin/menu/sync',{method:'POST',admin:true,data:{}})).status,200);
       const path=`holds/${first.reservation.id}/menu`;
@@ -138,7 +141,7 @@ test('booking, authentication, capacity and payment use the database end to end'
         assert.equal((await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:2}]}})).status,409);
         assert.equal((await call(path,{token:first.token})).body.items[0].quantity,4);
       }finally{Date.now=realNow;}
-    }finally{delete process.env.POS_MENU_URL;delete process.env.POS_DRAFT_URL;await new Promise(resolve=>cashier.close(resolve));}
+    }finally{await new Promise(resolve=>cashier.close(resolve));}
   });
   await t.test('logout invalidates the server session',async()=>{
     assert.equal((await call('auth/logout',{method:'POST',admin:true,data:{}})).status,200);
@@ -257,3 +260,4 @@ test('booking, authentication, capacity and payment use the database end to end'
     assert.equal((await select(next,['ac'])).status,200);await cancel(next);
   });
 });
+

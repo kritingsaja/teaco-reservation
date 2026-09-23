@@ -40,6 +40,20 @@ async function paymentSettings(db) {
   const settings=Object.fromEntries(rows.map(row=>[row.key,row.value]));
   return {...settings,configured:!!(settings.bank_name&&settings.account_number&&settings.account_holder)};
 }
+function cashierUrl(value) {
+  const raw=clean(value,1000);if(!raw)return '';
+  let parsed;try{parsed=new URL(raw);}catch{fail('Alamat API kasir tidak valid.');}
+  if(parsed.protocol!=='https:'&&!localMode())fail('Alamat API kasir harus menggunakan HTTPS.');
+  if(!['https:','http:'].includes(parsed.protocol))fail('Alamat API kasir tidak valid.');
+  return parsed.toString();
+}
+async function posSettings(db) {
+  const rows=await db.query("SELECT key,value FROM settings WHERE key IN ('pos_menu_url','pos_draft_url')");
+  const saved=Object.fromEntries(rows.map(row=>[row.key,row.value]));
+  const menu_url=saved.pos_menu_url||process.env.POS_MENU_URL||'';
+  const draft_url=saved.pos_draft_url||process.env.POS_DRAFT_URL||'';
+  return {menu_url,draft_url,menuConfigured:!!menu_url,draftConfigured:!!draft_url,tokenConfigured:!!process.env.POS_API_TOKEN};
+}
 const resetRecipient=()=>email(process.env.ADMIN_RESET_EMAIL||'');
 const resetIsConfigured=()=>!!(resetRecipient()&&process.env.RESEND_API_KEY&&process.env.RESET_FROM_EMAIL);
 const htmlEscape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -99,13 +113,15 @@ async function saveMenu(db,id,data,{req,admin}={}) {
     await tx.query('DELETE FROM reservation_menu_items WHERE reservation_id=$1',[id]);
     for(const i of items)await tx.query('INSERT INTO reservation_menu_items VALUES ($1,$2,$3,$4,$5)',[randomUUID(),id,i.id,i.quantity,i.note]);
     await tx.query("UPDATE reservations SET status='MENU_SELECTED' WHERE id=$1",[id]);
-    await tx.query('INSERT INTO pos_drafts(reservation_id,external_reference,status,updated_at) VALUES ($1,$2,$3,$4) ON CONFLICT(reservation_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at',[id,r.code,process.env.POS_DRAFT_URL?'PENDING':'NOT_CONFIGURED',now()]);
+    const pos=await posSettings(tx);
+    await tx.query('INSERT INTO pos_drafts(reservation_id,external_reference,status,updated_at) VALUES ($1,$2,$3,$4) ON CONFLICT(reservation_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at',[id,r.code,pos.draftConfigured?'PENDING':'NOT_CONFIGURED',now()]);
     await audit(tx,admin,id,req?'GUEST_MENU_SAVED':'ADMIN_MENU_FINALIZED');
     return {external_reference:r.code,visit_date:r.visit_date,customer:{name:r.customer_name,phone:r.phone},party_size:r.guest_count,seating:await seatsFor(tx,id),items:items.map(({id,...item})=>item),source_status:'MENU_SELECTED'};
   });
-  if(!process.env.POS_DRAFT_URL)return {saved:true,synced:false,message:'Menu tersimpan. Koneksi draft kasir belum tersedia.'};
+  const pos=await posSettings(db);
+  if(!pos.draftConfigured)return {saved:true,synced:false,message:'Menu tersimpan. Koneksi draft kasir belum tersedia.'};
   try {
-    const result=await cashierFetch(process.env.POS_DRAFT_URL,{method:'POST',headers:{'Idempotency-Key':payload.external_reference},body:JSON.stringify(payload)});
+    const result=await cashierFetch(pos.draft_url,{method:'POST',headers:{'Idempotency-Key':payload.external_reference},body:JSON.stringify(payload)});
     const draftId=clean(String(result.draft_id||result.id||''),150);if(!draftId)fail('Kasir tidak mengembalikan ID draft.',502);
     await db.query("UPDATE pos_drafts SET status='SYNCED',draft_id=$1,last_error=NULL,updated_at=$2 WHERE reservation_id=$3",[draftId,now(),id]);
     return {saved:true,synced:true,draftId};
@@ -337,13 +353,24 @@ export default async function handler(req,res) {
         const drafts=await db.query('SELECT * FROM pos_drafts');
         const rows=reservations.map(r=>({...publicReservation(r),phone:r.phone,created_at:r.created_at,seats:allocations.filter(s=>s.reservation_id===r.id),payment:payments.find(p=>p.reservation_id===r.id),items:items.filter(i=>i.reservation_id===r.id),pos:drafts.find(d=>d.reservation_id===r.id)}));
         const pendingHolds=await db.query("SELECT visit_date,COALESCE(SUM(guest_count),0) AS guests FROM reservations WHERE status='HOLD' GROUP BY visit_date");
-        return send(res,200,{admin,reservations:rows,holds:pendingHolds,settings:await paymentSettings(db),menu:await db.query('SELECT * FROM menu_products WHERE active=1 ORDER BY category,name'),storage:db.kind,posConfigured:!!process.env.POS_MENU_URL,draftConfigured:!!process.env.POS_DRAFT_URL});
+        const pos=await posSettings(db);
+        return send(res,200,{admin,reservations:rows,holds:pendingHolds,settings:await paymentSettings(db),pos,menu:await db.query('SELECT * FROM menu_products WHERE active=1 ORDER BY category,name'),storage:db.kind,posConfigured:pos.menuConfigured,draftConfigured:pos.draftConfigured});
       }
       if(path==='admin/settings'&&method==='PATCH') {
         const data=await body(req);
         if(!clean(data.bank_name,60)||!/^\d{5,30}$/.test(clean(data.account_number,30))||!clean(data.account_holder,100))fail('Isi bank, nomor rekening, dan nama pemilik yang valid.');
         await db.transaction(async tx=>{for(const key of ['bank_name','account_number','account_holder'])await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',[key,clean(data[key],100)]);await audit(tx,admin,null,'PAYMENT_SETTINGS_UPDATED');});
         return send(res,200,{settings:await paymentSettings(db)});
+      }
+      if(path==='admin/pos-settings'&&method==='PATCH') {
+        const data=await body(req),menuUrl=cashierUrl(data.menu_url),draftUrl=cashierUrl(data.draft_url);
+        if(!menuUrl||!draftUrl)fail('Isi alamat API Menu Kasir dan Draft Pilihan.');
+        await db.transaction(async tx=>{
+          await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',['pos_menu_url',menuUrl]);
+          await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',['pos_draft_url',draftUrl]);
+          await audit(tx,admin,null,'POS_API_SETTINGS_UPDATED');
+        });
+        return send(res,200,{pos:await posSettings(db)});
       }
       const proofMatch=path.match(/^admin\/proofs\/([^/]+)$/);
       if(proofMatch&&method==='GET') {
@@ -364,7 +391,7 @@ export default async function handler(req,res) {
         });return send(res,200,{ok:true});
       }
       if(path==='admin/menu/sync'&&method==='POST') {
-        const result=await cashierFetch(process.env.POS_MENU_URL);
+        const result=await cashierFetch((await posSettings(db)).menu_url);
         const products=Array.isArray(result)?result:result.products||result.menus;
         if(!Array.isArray(products)||!products.length||products.length>1000)fail('Daftar menu kasir belum valid.',502);
         const mapped=products.map(p=>({external_id:clean(String(p.product_id||p.id||p.sku||''),100),name:clean(p.name,150),category:clean(p.category?.name||p.category,80)||'Menu',price:Math.max(0,Math.round(Number(p.price)||0))}));
@@ -388,3 +415,4 @@ export default async function handler(req,res) {
     send(res,status,{error:status===500?'Layanan belum dapat diakses. Coba lagi.':error.message,code:error.code});
   }
 }
+
