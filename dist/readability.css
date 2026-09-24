@@ -193,3 +193,46 @@ input:not([type=checkbox]):not([type=file]),textarea,select {font-size:16px}
 .guide-steps strong,.guide-steps small{display:block}.guide-steps strong{font-size:14px}.guide-steps small{margin-top:3px;color:var(--muted);font-size:12px;line-height:1.5}.guide-dialog .primary{width:100%}
 @media(max-width:640px){.reservation-access{margin-top:5px;padding:18px}.reservation-access strong{font-size:14px}.guide-steps{gap:14px}}
 
+.guest-cart-toggle,.guest-cart-sheet-head,.guest-cart-scrim{display:none}
+.guest-cart-detail{display:contents}
+.guest-cart-row{display:block}
+.guest-cart-row-main{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.guest-cart-row-main>span{min-width:0;overflow-wrap:anywhere}
+.guest-cart-note-button{display:inline-flex;align-items:center;gap:5px;margin-top:5px;padding:4px 0;border:0;background:transparent;color:var(--muted);font-size:11px}
+.guest-cart-note-button svg{width:14px;height:14px}
+.guest-cart-note-button.has-note{color:var(--accent)}
+.guest-cart-row textarea{width:100%;min-height:58px;margin:5px 0 0;padding:9px 11px;font-size:13px}
+@media(max-width:640px){
+  .guest-menu-screen.active{animation:none}
+  .guest-menu-catalog{padding-bottom:96px}
+  .guest-cart-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:29;width:100%;border:0;background:#100b0999}
+  .guest-menu-sidebar{position:fixed;z-index:30;inset:auto 0 0;width:100%;height:auto;max-height:none;padding:0;background:var(--surface);border-top:1px solid var(--line);box-shadow:0 -8px 26px #0003}
+  .guest-cart-toggle{display:flex;align-items:center;gap:12px;width:100%;min-height:64px;padding:11px 18px calc(11px + env(safe-area-inset-bottom));border:0;background:var(--surface);color:var(--text);text-align:left}
+  .guest-cart-toggle>span{font-size:14px;font-weight:600}
+  .guest-cart-toggle>strong{margin-left:auto;font-size:16px;color:var(--accent);font-weight:650;font-variant-numeric:tabular-nums}
+  .guest-cart-toggle svg{width:17px;height:17px;color:var(--accent);transform:rotate(-90deg);transition:transform .2s}
+  .guest-menu-sidebar.open .guest-cart-toggle svg{transform:rotate(90deg)}
+  .guest-cart-detail{display:none;position:absolute;left:0;right:0;bottom:100%;max-height:min(72dvh,560px);flex-direction:column;min-height:0;background:var(--surface);border-radius:18px 18px 0 0;box-shadow:0 -16px 40px #0004;overflow:hidden}
+  .guest-menu-sidebar.open .guest-cart-detail{display:flex;animation:cart-rise .2s ease-out}
+  .guest-cart-sheet-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px 10px;font-size:15px}
+  .guest-cart-sheet-head .icon-button{width:30px;height:30px;border:0}
+  .guest-menu-sidebar .guest-cart{flex:1;min-height:0;max-height:none;overflow:auto;margin:0;padding:0 18px 8px;border:0;border-radius:0;background:var(--surface)}
+  .guest-menu-sidebar .guest-cart-head{display:none}
+  .guest-menu-sidebar .guest-cart-total{display:flex;position:static;margin-top:10px;padding:12px 0 2px}
+  .guest-menu-sidebar .guest-cart-empty{display:block;margin:12px 0}
+  .guest-menu-sidebar .guest-cart-row{padding:12px 0;border-bottom:1px solid var(--line);font-size:12px}
+  .guest-menu-sidebar .guest-cart-row>span{display:initial}
+  .guest-cart-row-main{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .guest-cart-row-main>span{display:flex;flex-direction:column;gap:3px;font-weight:600}
+  .guest-cart-row-main small{font-weight:400}
+  .guest-menu-sidebar .guest-cart-controls{grid-template-columns:26px 18px 26px;gap:4px}
+  .guest-menu-sidebar .guest-cart-controls button{width:26px;height:26px}
+  .guest-menu-sidebar .guest-cart-controls strong{grid-column:1/-1;justify-self:end;margin-top:3px;font-size:11px}
+  .guest-cart-note-button{margin-top:8px;min-height:30px}
+  .guest-menu-sidebar .action-dock{display:block;margin:0;padding:12px 18px calc(12px + env(safe-area-inset-bottom));border:0;border-top:1px solid var(--line);background:var(--surface)}
+  .guest-menu-sidebar .dock-summary{display:none}
+  .guest-menu-sidebar .action-dock .button{width:100%;min-height:45px}
+  .guest-menu-sidebar .form-error{margin:0;padding:0 18px 8px}
+}
+@keyframes cart-rise{from{opacity:.7;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+

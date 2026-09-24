@@ -140,6 +140,7 @@ async function openGuestMenu(){
   catch(error){toast(error.message);}
 }
 function renderGuestMenu(){
+  setGuestCartOpen(false);
   const data=state.guestMenu;$('#guest-menu-context').textContent=dateText(state.booking.visit_date,true)+' · '+state.booking.guest_count+' tamu · '+state.booking.code;
   $('#guest-menu-notice').textContent=data.editable?'Pilih jumlah dan catatan. Batas perubahan: 07.00 WIB hari kunjungan.':'Pilihan menu sudah dikunci. Untuk perubahan, hubungi admin.';
   const products=data.editable?data.products:data.items.map(item=>({id:item.product_id,name:item.name,category:item.category||'Menu tersimpan',price:item.price}));
@@ -157,6 +158,7 @@ function renderGuestMenu(){
   $$('#guest-menu-list [data-menu-inc]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity(button.closest('[data-menu-card]'),1)));
   $$('#guest-menu-list [data-menu-dec]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity(button.closest('[data-menu-card]'),-1)));
   $$('#guest-menu-list [data-note-toggle]').forEach(button=>button.addEventListener('click',()=>{const area=button.closest('[data-menu-card]').querySelector('[data-guest-note]');area.hidden=!area.hidden;if(!area.hidden)area.focus();}));
+  $$('#guest-menu-list [data-guest-note]').forEach(area=>area.addEventListener('input',()=>{const cartArea=$(`[data-cart-note-input="${CSS.escape(area.dataset.guestNote)}"]`);if(cartArea)cartArea.value=area.value;area.closest('[data-menu-card]').querySelector('[data-note-toggle]').classList.toggle('has-note',!!area.value.trim());}));
   $('#guest-menu-search').value='';$('#guest-menu-search').addEventListener('input',filterGuestMenu);
   $('#guest-menu-category').value='';$('#guest-menu-category').addEventListener('change',filterGuestMenu);
   filterGuestMenu();
@@ -176,12 +178,24 @@ function changeMenuQuantity(card,delta){
 }
 function updateGuestMenuSummary(){
   const inputs=$$('#guest-menu-list [data-guest-product]'),selected=inputs.filter(input=>Number(input.value)>0),count=selected.reduce((s,input)=>s+Number(input.value),0),total=selected.reduce((s,input)=>s+(Number(input.dataset.price)||0)*Number(input.value),0);
-  $('#guest-menu-count').textContent=count+' item';$('#guest-menu-party').textContent='Untuk '+state.booking.guest_count+' tamu · '+money(total);$('#guest-cart-count').textContent=count+' item';$('#guest-menu-total').textContent=money(total);
-  $('#guest-cart-items').innerHTML=selected.length?selected.map(input=>`<div class="guest-cart-row"><span>${escape(input.dataset.name)}<small>${money(Number(input.dataset.price)||0)} / item</small></span><div class="guest-cart-controls"><button type="button" data-cart-dec="${escape(input.dataset.guestProduct)}" aria-label="Kurangi ${escape(input.dataset.name)}">−</button><b>${Number(input.value)}</b><button type="button" data-cart-inc="${escape(input.dataset.guestProduct)}" aria-label="Tambah ${escape(input.dataset.name)}">+</button><strong>${money((Number(input.dataset.price)||0)*Number(input.value))}</strong></div></div>`).join(''):'<p class="guest-cart-empty">Pilih menu untuk mulai.</p>';
+  $('#guest-menu-count').textContent=count+' item';$('#guest-menu-party').textContent='Untuk '+state.booking.guest_count+' tamu · '+money(total);$('#guest-cart-count').textContent=count+' item';$('#guest-menu-total').textContent=money(total);$('#guest-cart-mobile-count').textContent=count+' item';$('#guest-cart-mobile-total').textContent=money(total);
+  $('#guest-cart-items').innerHTML=selected.length?selected.map(input=>{
+    const note=input.closest('[data-menu-card]').querySelector('[data-guest-note]').value;
+    return `<div class="guest-cart-row"><div class="guest-cart-row-main"><span>${escape(input.dataset.name)}<small>${money(Number(input.dataset.price)||0)} / item</small></span><div class="guest-cart-controls"><button type="button" data-cart-dec="${escape(input.dataset.guestProduct)}" aria-label="Kurangi ${escape(input.dataset.name)}" ${state.guestMenu.editable?'':'disabled'}>−</button><b>${Number(input.value)}</b><button type="button" data-cart-inc="${escape(input.dataset.guestProduct)}" aria-label="Tambah ${escape(input.dataset.name)}" ${state.guestMenu.editable?'':'disabled'}>+</button><strong>${money((Number(input.dataset.price)||0)*Number(input.value))}</strong></div></div><button type="button" class="guest-cart-note-button ${note?'has-note':''}" data-cart-note-toggle="${escape(input.dataset.guestProduct)}" aria-expanded="${!!note}" ${state.guestMenu.editable?'':'disabled'}><svg><use href="#i-note"/></svg>${note?'Ubah catatan':'Tambah catatan'}</button><textarea data-cart-note-input="${escape(input.dataset.guestProduct)}" rows="2" maxlength="300" placeholder="Contoh: tanpa sambal" aria-label="Catatan ${escape(input.dataset.name)}" ${state.guestMenu.editable?'':'disabled'} ${note?'':'hidden'}>${escape(note)}</textarea></div>`;
+  }).join(''):'<p class="guest-cart-empty">Pilih menu untuk mulai.</p>';
   $$('[data-cart-inc]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity($(`[data-guest-product="${CSS.escape(button.dataset.cartInc)}"]`).closest('[data-menu-card]'),1)));
   $$('[data-cart-dec]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity($(`[data-guest-product="${CSS.escape(button.dataset.cartDec)}"]`).closest('[data-menu-card]'),-1)));
+  $$('[data-cart-note-toggle]').forEach(button=>button.addEventListener('click',()=>{const area=$(`[data-cart-note-input="${CSS.escape(button.dataset.cartNoteToggle)}"]`);area.hidden=!area.hidden;button.setAttribute('aria-expanded',String(!area.hidden));if(!area.hidden)area.focus();}));
+  $$('[data-cart-note-input]').forEach(area=>area.addEventListener('input',()=>{const source=$(`[data-guest-note="${CSS.escape(area.dataset.cartNoteInput)}"]`);source.value=area.value;source.closest('[data-menu-card]').querySelector('[data-note-toggle]').classList.toggle('has-note',!!area.value.trim());area.closest('.guest-cart-row').querySelector('[data-cart-note-toggle]').classList.toggle('has-note',!!area.value.trim());}));
   $('#save-guest-menu').hidden=!state.guestMenu.editable;$('#save-guest-menu').disabled=!state.guestMenu.editable||count<1||inputs.some(input=>!input.validity.valid);
 }
+function setGuestCartOpen(open){
+  $('#guest-menu-sidebar').classList.toggle('open',open);$('#guest-cart-scrim').hidden=!open;$('#guest-cart-toggle').setAttribute('aria-expanded',String(open));$('#guest-cart-toggle').setAttribute('aria-label',open?'Tutup daftar pilihan menu':'Buka daftar pilihan menu');
+}
+$('#guest-cart-toggle').addEventListener('click',()=>setGuestCartOpen(!$('#guest-menu-sidebar').classList.contains('open')));
+$('#guest-cart-close').addEventListener('click',()=>setGuestCartOpen(false));
+$('#guest-cart-scrim').addEventListener('click',()=>setGuestCartOpen(false));
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('#guest-menu-sidebar').classList.contains('open'))setGuestCartOpen(false);});
 $('#open-guest-menu').addEventListener('click',()=>busy($('#open-guest-menu'),openGuestMenu));
 $('#back-to-ticket').addEventListener('click',async()=>{try{const result=await request('holds/'+state.booking.id);state.booking=result.reservation;saveBooking();renderTicket(result.seats);setScreen('pending-screen');}catch(error){toast(error.message);}});
 $('#guest-menu-form').addEventListener('submit',event=>{event.preventDefault();busy($('#save-guest-menu'),async()=>{
