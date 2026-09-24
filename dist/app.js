@@ -148,11 +148,15 @@ function renderGuestMenu(){
   $('#guest-menu-category').innerHTML='<option value="">Semua kategori</option>'+categories.map(category=>`<option value="${escape(category)}">${escape(category)}</option>`).join('');
   $('#guest-menu-list').innerHTML=products.length?products.map((p,i)=>{
     const item=data.items.find(item=>item.product_id===p.id),qty=item?.quantity||0;
-    return `<article class="panel guest-menu-card" data-menu-card data-category="${escape(p.category||'Lainnya')}" data-name="${escape(p.name.toLocaleLowerCase('id'))}"><div class="guest-menu-title"><label for="guest-qty-${i}"><strong>${escape(p.name)}</strong><small>${escape(p.category||'Lainnya')}${p.price!==undefined?' · '+money(p.price):''}</small></label><div><label class="quantity-label" for="guest-qty-${i}">Jumlah</label><input id="guest-qty-${i}" data-guest-product="${escape(p.id)}" data-name="${escape(p.name)}" data-price="${Number(p.price)||0}" type="number" inputmode="numeric" min="0" max="100" step="1" value="${qty}" ${data.editable?'':'disabled'} /></div></div><label class="guest-note-label" for="guest-note-${i}">Catatan <span class="optional">opsional</span></label><textarea id="guest-note-${i}" data-guest-note="${escape(p.id)}" rows="2" maxlength="300" placeholder="Pedas, less sugar, alergi…" ${data.editable?'':'disabled'}>${escape(item?.note||'')}</textarea></article>`;
+    return `<article class="panel guest-menu-card ${qty?'selected':''}" data-menu-card data-category="${escape(p.category||'Lainnya')}" data-name="${escape(p.name.toLocaleLowerCase('id'))}"><input id="guest-qty-${i}" data-guest-product="${escape(p.id)}" data-name="${escape(p.name)}" data-price="${Number(p.price)||0}" type="number" inputmode="numeric" min="0" max="100" step="1" value="${qty}" ${data.editable?'':'disabled'} hidden/><button type="button" class="menu-select" data-menu-add ${data.editable?'':'disabled'}><span><strong>${escape(p.name)}</strong><small>${escape(p.category||'Lainnya')} · ${money(p.price)}</small></span><b class="menu-qty" data-menu-qty>${qty||'+'}</b></button><div class="menu-card-actions"><button type="button" class="menu-note-button ${item?.note?'has-note':''}" data-note-toggle aria-label="${item?.note?'Ubah':'Tambah'} catatan ${escape(p.name)}" title="Catatan"><svg><use href="#i-note"/></svg><span>${item?.note?'Catatan':'Catatan'}</span></button><div class="menu-stepper"><button type="button" data-menu-dec aria-label="Kurangi ${escape(p.name)}" ${!qty||!data.editable?'disabled':''}>−</button><span data-menu-qty>${qty}</span><button type="button" data-menu-inc aria-label="Tambah ${escape(p.name)}" ${!data.editable?'disabled':''}>+</button></div></div><textarea data-guest-note="${escape(p.id)}" rows="2" maxlength="300" placeholder="Catatan menu…" ${data.editable?'':'disabled'} ${item?.note?'':'hidden'}>${escape(item?.note||'')}</textarea></article>`;
   }).join(''):empty(data.editable?'Menu belum tersedia':'Belum ada menu tersimpan',data.editable?'Admin perlu menyinkronkan menu dari kasir. Tidak ada menu otomatis.':'Hubungi admin untuk melengkapi menu.','list');
   const inactive=data.editable&&data.items.some(item=>!Number(item.active));
   $('#guest-menu-error').textContent=inactive?'Ada menu lama yang tidak tersedia lagi. Periksa dan pilih penggantinya sebelum menyimpan.':'';
-  $$('#guest-menu-list [data-guest-product]').forEach(input=>input.addEventListener('input',updateGuestMenuSummary));
+  $$('#guest-menu-list [data-guest-product]').forEach(input=>input.addEventListener('input',()=>{syncMenuCard(input);updateGuestMenuSummary();}));
+  $$('#guest-menu-list [data-menu-add]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity(button.closest('[data-menu-card]'),1)));
+  $$('#guest-menu-list [data-menu-inc]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity(button.closest('[data-menu-card]'),1)));
+  $$('#guest-menu-list [data-menu-dec]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity(button.closest('[data-menu-card]'),-1)));
+  $$('#guest-menu-list [data-note-toggle]').forEach(button=>button.addEventListener('click',()=>{const area=button.closest('[data-menu-card]').querySelector('[data-guest-note]');area.hidden=!area.hidden;if(!area.hidden)area.focus();}));
   $('#guest-menu-search').value='';$('#guest-menu-search').addEventListener('input',filterGuestMenu);
   $('#guest-menu-category').value='';$('#guest-menu-category').addEventListener('change',filterGuestMenu);
   filterGuestMenu();
@@ -162,10 +166,20 @@ function filterGuestMenu(){
   const query=$('#guest-menu-search').value.trim().toLocaleLowerCase('id'),category=$('#guest-menu-category').value;
   $$('[data-menu-card]').forEach(card=>{card.hidden=!(card.dataset.name.includes(query)&&(!category||card.dataset.category===category));});
 }
+function syncMenuCard(input){
+  const card=input.closest('[data-menu-card]'),qty=Math.max(0,Math.min(100,Number(input.value)||0));input.value=qty;card.classList.toggle('selected',qty>0);
+  card.querySelectorAll('[data-menu-qty]').forEach(label=>label.textContent=qty||'+');
+  card.querySelector('[data-menu-dec]').disabled=!qty||!state.guestMenu.editable;
+}
+function changeMenuQuantity(card,delta){
+  if(!card||!state.guestMenu.editable)return;const input=card.querySelector('[data-guest-product]');input.value=Math.max(0,Math.min(100,(Number(input.value)||0)+delta));syncMenuCard(input);updateGuestMenuSummary();
+}
 function updateGuestMenuSummary(){
   const inputs=$$('#guest-menu-list [data-guest-product]'),selected=inputs.filter(input=>Number(input.value)>0),count=selected.reduce((s,input)=>s+Number(input.value),0),total=selected.reduce((s,input)=>s+(Number(input.dataset.price)||0)*Number(input.value),0);
   $('#guest-menu-count').textContent=count+' item';$('#guest-menu-party').textContent='Untuk '+state.booking.guest_count+' tamu · '+money(total);$('#guest-cart-count').textContent=count+' item';$('#guest-menu-total').textContent=money(total);
-  $('#guest-cart-items').innerHTML=selected.length?selected.map(input=>`<div class="guest-cart-row"><span>${escape(input.dataset.name)} <small>× ${Number(input.value)}</small></span><strong>${money((Number(input.dataset.price)||0)*Number(input.value))}</strong></div>`).join(''):'<p class="guest-cart-empty">Menu yang dipilih akan tampil di sini.</p>';
+  $('#guest-cart-items').innerHTML=selected.length?selected.map(input=>`<div class="guest-cart-row"><span>${escape(input.dataset.name)}<small>${money(Number(input.dataset.price)||0)} / item</small></span><div class="guest-cart-controls"><button type="button" data-cart-dec="${escape(input.dataset.guestProduct)}" aria-label="Kurangi ${escape(input.dataset.name)}">−</button><b>${Number(input.value)}</b><button type="button" data-cart-inc="${escape(input.dataset.guestProduct)}" aria-label="Tambah ${escape(input.dataset.name)}">+</button><strong>${money((Number(input.dataset.price)||0)*Number(input.value))}</strong></div></div>`).join(''):'<p class="guest-cart-empty">Pilih menu untuk mulai.</p>';
+  $$('[data-cart-inc]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity($(`[data-guest-product="${CSS.escape(button.dataset.cartInc)}"]`).closest('[data-menu-card]'),1)));
+  $$('[data-cart-dec]').forEach(button=>button.addEventListener('click',()=>changeMenuQuantity($(`[data-guest-product="${CSS.escape(button.dataset.cartDec)}"]`).closest('[data-menu-card]'),-1)));
   $('#save-guest-menu').hidden=!state.guestMenu.editable;$('#save-guest-menu').disabled=!state.guestMenu.editable||count<1||inputs.some(input=>!input.validity.valid);
 }
 $('#open-guest-menu').addEventListener('click',()=>busy($('#open-guest-menu'),openGuestMenu));
