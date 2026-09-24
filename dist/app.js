@@ -201,12 +201,12 @@ function renderAdmin(){
   for(const selector of ['#dashboard-date','#reservation-date']){const select=$(selector);if(select.options.length===1)select.innerHTML+=(state.public?.days||[]).map(day=>`<option value="${day.visit_date}">${dateText(day.visit_date,true)}</option>`).join('');}
   renderStats();renderReservationList();
   $('#menu-list').innerHTML=data.menu.length?data.menu.map(p=>`<div class="menu-row"><div><strong>${escape(p.name)}</strong><small>${escape(p.category)} · ID ${escape(p.external_id)}</small></div><span>${money(p.price)}</span></div>`).join(''):empty('Menu belum dihubungkan','Menu akan diambil dari aplikasi kasir, tanpa menu contoh.','list');
-  const pos=data.pos||{menu_url:'',draft_url:'',menuConfigured:data.posConfigured,draftConfigured:data.draftConfigured,tokenConfigured:false};
+  const pos=data.pos||{provider:'POS Kasir',menuConfigured:data.posConfigured,draftConfigured:data.draftConfigured};
   $('#menu-source').textContent=data.menu.length?`${data.menu.length} produk tersinkron`:'Belum ada menu tersinkron';$('#sync-menu').disabled=!pos.menuConfigured;
-  $('#menu-integration-note').textContent=pos.menuConfigured?(pos.draftConfigured?'Menu final siap dikirim sebagai draft kasir.':'Menu dapat diambil; endpoint Draft Pilihan belum dihubungkan.'):'Atur API Menu Kasir dan Draft Pilihan melalui tombol “Atur API kasir”.';
+  $('#menu-integration-note').textContent=pos.menuConfigured?(pos.draftConfigured?'Menu final siap dikirim sebagai draft POS Kasir.':'Kode API Pesanan POS Kasir belum dihubungkan.'):'Hubungkan dua kode API dari POS Kasir melalui tombol “Atur API kasir”.';
   for(const key of ['bank_name','account_number','account_holder'])$('#settings-form').elements[key].value=data.settings[key]||'';
-  $('#pos-settings-form').elements.menu_url.value=pos.menu_url||'';$('#pos-settings-form').elements.draft_url.value=pos.draft_url||'';
-  $('#pos-token-note').textContent=pos.tokenConfigured?'Token API tersimpan aman di Vercel.':'Jika API memerlukan token, tambahkan POS_API_TOKEN sebagai Secret di Vercel.';
+  $('#pos-settings-form').reset();
+  $('#pos-token-note').textContent=pos.menuConfigured&&pos.draftConfigured?'POS Kasir sudah terhubung. Isi kedua kode hanya jika ingin mengganti key.':'Kode tidak ditampilkan kembali setelah disimpan. Buat key melalui POS Kasir → Akses API.';
   $('#data-status').innerHTML=`<div class="storage-badge">${icon('database')}${data.storage==='turso'?'Turso · SQLite online':'SQLite · database pengujian lokal'}</div><p class="muted">${data.storage==='turso'?'Data tersimpan di Turso dan digunakan bersama oleh semua perangkat.':'Data tersimpan di file .data/teaco.sqlite pada komputer ini. Versi Vercel memerlukan koneksi Turso tersendiri.'}</p>`;
   setAdminTab(state.tab);
 }

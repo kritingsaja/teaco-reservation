@@ -40,20 +40,17 @@ async function paymentSettings(db) {
   const settings=Object.fromEntries(rows.map(row=>[row.key,row.value]));
   return {...settings,configured:!!(settings.bank_name&&settings.account_number&&settings.account_holder)};
 }
-function cashierUrl(value) {
-  const raw=clean(value,1000);if(!raw)return '';
-  let parsed;try{parsed=new URL(raw);}catch{fail('Alamat API kasir tidak valid.');}
-  if(parsed.protocol!=='https:'&&!localMode())fail('Alamat API kasir harus menggunakan HTTPS.');
-  if(!['https:','http:'].includes(parsed.protocol))fail('Alamat API kasir tidak valid.');
-  return parsed.toString();
-}
 async function posSettings(db) {
-  const rows=await db.query("SELECT key,value FROM settings WHERE key IN ('pos_menu_url','pos_draft_url')");
+  const rows=await db.query("SELECT key,value FROM settings WHERE key IN ('pos_menu_key','pos_orders_key')");
   const saved=Object.fromEntries(rows.map(row=>[row.key,row.value]));
-  const menu_url=saved.pos_menu_url||process.env.POS_MENU_URL||'';
-  const draft_url=saved.pos_draft_url||process.env.POS_DRAFT_URL||'';
-  return {menu_url,draft_url,menuConfigured:!!menu_url,draftConfigured:!!draft_url,tokenConfigured:!!process.env.POS_API_TOKEN};
+  const base=clean(process.env.POS_BASE_URL||'https://pos.teacoxplus.cloud',1000).replace(/\/+$/,'');
+  let origin;try{origin=new URL(base).origin;}catch{fail('Alamat layanan POS belum valid.',503);}
+  if(!localMode()&&new URL(origin).protocol!=='https:')fail('Layanan POS harus menggunakan HTTPS.',503);
+  const menu_key=saved.pos_menu_key||process.env.POS_MENU_API_KEY||process.env.POS_API_TOKEN||'';
+  const orders_key=saved.pos_orders_key||process.env.POS_ORDERS_API_KEY||process.env.POS_API_TOKEN||'';
+  return {menu_url:origin+'/api/v1/menu',draft_url:origin+'/api/v1/orders',menu_key,orders_key,menuConfigured:!!menu_key,draftConfigured:!!orders_key};
 }
+const publicPos=pos=>({provider:'POS Kasir',menuConfigured:pos.menuConfigured,draftConfigured:pos.draftConfigured});
 const resetRecipient=()=>email(process.env.ADMIN_RESET_EMAIL||'');
 const resetIsConfigured=()=>!!(resetRecipient()&&process.env.RESEND_API_KEY&&process.env.RESET_FROM_EMAIL);
 const htmlEscape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -121,8 +118,10 @@ async function saveMenu(db,id,data,{req,admin}={}) {
   const pos=await posSettings(db);
   if(!pos.draftConfigured)return {saved:true,synced:false,message:'Menu tersimpan. Koneksi draft kasir belum tersedia.'};
   try {
-    const result=await cashierFetch(pos.draft_url,{method:'POST',headers:{'Idempotency-Key':payload.external_reference},body:JSON.stringify(payload)});
-    const draftId=clean(String(result.draft_id||result.id||''),150);if(!draftId)fail('Kasir tidak mengembalikan ID draft.',502);
+    const order={nama_pelanggan:`${payload.customer.name} · ${payload.external_reference}`,items:payload.items.map(item=>({kode_barang:item.menu_code,qty:item.quantity,catatan:item.note}))};
+    const result=await cashierFetch(pos.draft_url,{method:'POST',headers:{'Idempotency-Key':payload.external_reference},body:JSON.stringify(order)},pos.orders_key);
+    const draft=result.data||result;
+    const draftId=clean(String(draft.draft_id||draft.id||''),150);if(!draftId)fail('Kasir tidak mengembalikan ID draft.',502);
     await db.query("UPDATE pos_drafts SET status='SYNCED',draft_id=$1,last_error=NULL,updated_at=$2 WHERE reservation_id=$3",[draftId,now(),id]);
     return {saved:true,synced:true,draftId};
   } catch(error) {
@@ -142,10 +141,10 @@ function validateProof(proof) {
   if(!type)fail('Gunakan gambar JPG, PNG, WebP atau PDF.');
   return {data:buffer.toString('base64'),type,name:clean(proof.name,120).replace(/[^\w. -]/g,'_')||'bukti-pembayaran'};
 }
-async function cashierFetch(url,options={}) {
+async function cashierFetch(url,options={},token='') {
   if(!url)fail('Integrasi kasir belum dihubungkan.',503);
   if(!localMode()&&new URL(url).protocol!=='https:')fail('Endpoint kasir harus HTTPS.',503);
-  const response=await fetch(url,{...options,signal:AbortSignal.timeout(10000),headers:{'Content-Type':'application/json',...(process.env.POS_API_TOKEN?{Authorization:`Bearer ${process.env.POS_API_TOKEN}`} : {}),...options.headers}});
+  const response=await fetch(url,{...options,signal:AbortSignal.timeout(10000),headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`} : {}),...options.headers}});
   if(!response.ok)fail('Kasir belum dapat menerima permintaan. Data tetap tersimpan.',502);
   return response.json();
 }
@@ -354,7 +353,7 @@ export default async function handler(req,res) {
         const rows=reservations.map(r=>({...publicReservation(r),phone:r.phone,created_at:r.created_at,seats:allocations.filter(s=>s.reservation_id===r.id),payment:payments.find(p=>p.reservation_id===r.id),items:items.filter(i=>i.reservation_id===r.id),pos:drafts.find(d=>d.reservation_id===r.id)}));
         const pendingHolds=await db.query("SELECT visit_date,COALESCE(SUM(guest_count),0) AS guests FROM reservations WHERE status='HOLD' GROUP BY visit_date");
         const pos=await posSettings(db);
-        return send(res,200,{admin,reservations:rows,holds:pendingHolds,settings:await paymentSettings(db),pos,menu:await db.query('SELECT * FROM menu_products WHERE active=1 ORDER BY category,name'),storage:db.kind,posConfigured:pos.menuConfigured,draftConfigured:pos.draftConfigured});
+        return send(res,200,{admin,reservations:rows,holds:pendingHolds,settings:await paymentSettings(db),pos:publicPos(pos),menu:await db.query('SELECT * FROM menu_products WHERE active=1 ORDER BY category,name'),storage:db.kind,posConfigured:pos.menuConfigured,draftConfigured:pos.draftConfigured});
       }
       if(path==='admin/settings'&&method==='PATCH') {
         const data=await body(req);
@@ -363,14 +362,14 @@ export default async function handler(req,res) {
         return send(res,200,{settings:await paymentSettings(db)});
       }
       if(path==='admin/pos-settings'&&method==='PATCH') {
-        const data=await body(req),menuUrl=cashierUrl(data.menu_url),draftUrl=cashierUrl(data.draft_url);
-        if(!menuUrl||!draftUrl)fail('Isi alamat API Menu Kasir dan Draft Pilihan.');
+        const data=await body(req),menuKey=clean(data.menu_key,1000),ordersKey=clean(data.orders_key,1000);
+        if(!menuKey||!ordersKey||/\s/.test(menuKey)||/\s/.test(ordersKey))fail('Isi kode API Menu dan kode API Pesanan dari POS Kasir.');
         await db.transaction(async tx=>{
-          await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',['pos_menu_url',menuUrl]);
-          await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',['pos_draft_url',draftUrl]);
+          await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',['pos_menu_key',menuKey]);
+          await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',['pos_orders_key',ordersKey]);
           await audit(tx,admin,null,'POS_API_SETTINGS_UPDATED');
         });
-        return send(res,200,{pos:await posSettings(db)});
+        return send(res,200,{pos:publicPos(await posSettings(db))});
       }
       const proofMatch=path.match(/^admin\/proofs\/([^/]+)$/);
       if(proofMatch&&method==='GET') {
@@ -391,10 +390,12 @@ export default async function handler(req,res) {
         });return send(res,200,{ok:true});
       }
       if(path==='admin/menu/sync'&&method==='POST') {
-        const result=await cashierFetch((await posSettings(db)).menu_url);
-        const products=Array.isArray(result)?result:result.products||result.menus;
+        const pos=await posSettings(db);
+        if(!pos.menuConfigured)fail('Kode API Menu POS Kasir belum dihubungkan.',503);
+        const result=await cashierFetch(pos.menu_url,{},pos.menu_key);
+        const products=Array.isArray(result)?result:result.data||result.products||result.menus;
         if(!Array.isArray(products)||!products.length||products.length>1000)fail('Daftar menu kasir belum valid.',502);
-        const mapped=products.map(p=>({external_id:clean(String(p.product_id||p.id||p.sku||''),100),name:clean(p.name,150),category:clean(p.category?.name||p.category,80)||'Menu',price:Math.max(0,Math.round(Number(p.price)||0))}));
+        const mapped=products.map(p=>({external_id:clean(String(p.product_id||p.id||p.sku||p.kode_barang||''),100),name:clean(p.name||p.nama||p.nama_barang,150),category:clean(p.category?.name||p.category||p.kategori,80)||'Menu',price:Math.max(0,Math.round(Number(p.price||p.harga||p.harga_jual)||0))}));
         if(mapped.some(p=>!p.external_id||!p.name)||new Set(mapped.map(p=>p.external_id)).size!==mapped.length)fail('Menu kasir memerlukan ID unik dan nama.',502);
         await db.transaction(async tx=>{
           await tx.query('UPDATE menu_products SET active=0');

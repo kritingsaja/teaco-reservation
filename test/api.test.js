@@ -101,18 +101,19 @@ test('booking, authentication, capacity and payment use the database end to end'
     const requests=[];let unavailable=false;
     const cashier=createServer(async(req,res)=>{
       res.setHeader('Content-Type','application/json');
-      if(req.url==='/menu'){res.end(JSON.stringify({products:[{id:'pos-nasi',name:'Menu pengujian',category:'Makanan',price:20000}]}));return;}
+      if(req.url==='/api/v1/menu'){res.end(JSON.stringify({success:true,data:[{kode_barang:'pos-nasi',nama_barang:'Menu pengujian',kategori:'Makanan',harga_jual:20000}]}));return;}
       let raw='';for await(const chunk of req)raw+=chunk;
       requests.push({key:req.headers['idempotency-key'],body:JSON.parse(raw)});
       if(unavailable){res.statusCode=503;res.end('{}');return;}
-      res.end(JSON.stringify({draft_id:'isolated-draft'}));
+      res.end(JSON.stringify({success:true,data:{draft_id:'isolated-draft'}}));
     });
     await new Promise(resolve=>cashier.listen(0,'127.0.0.1',resolve));
     const url=`http://127.0.0.1:${cashier.address().port}`;
-    assert.equal((await call('admin/pos-settings',{method:'PATCH',data:{menu_url:url+'/menu',draft_url:url+'/draft'}})).status,401);
-    assert.equal((await call('admin/pos-settings',{method:'PATCH',admin:true,data:{menu_url:'not-a-url',draft_url:''}})).status,400);
-    const configured=await call('admin/pos-settings',{method:'PATCH',admin:true,data:{menu_url:url+'/menu',draft_url:url+'/draft'}});
-    assert.equal(configured.status,200);assert.equal(configured.body.pos.menu_url,url+'/menu');assert.equal(configured.body.pos.draft_url,url+'/draft');
+    const previousBase=process.env.POS_BASE_URL;process.env.POS_BASE_URL=url;
+    assert.equal((await call('admin/pos-settings',{method:'PATCH',data:{menu_key:'menu-key',orders_key:'orders-key'}})).status,401);
+    assert.equal((await call('admin/pos-settings',{method:'PATCH',admin:true,data:{menu_key:'',orders_key:''}})).status,400);
+    const configured=await call('admin/pos-settings',{method:'PATCH',admin:true,data:{menu_key:'menu-key',orders_key:'orders-key'}});
+    assert.equal(configured.status,200);assert.equal(configured.body.pos.menuConfigured,true);assert.equal(configured.body.pos.draftConfigured,true);assert.equal('menu_key' in configured.body.pos,false);
     try{
       assert.equal((await call('admin/menu/sync',{method:'POST',admin:true,data:{}})).status,200);
       const path=`holds/${first.reservation.id}/menu`;
@@ -126,7 +127,7 @@ test('booking, authentication, capacity and payment use the database end to end'
       assert.equal(save.status,200);assert.equal(save.body.synced,true);
       let saved=(await call(path,{token:first.token})).body;
       assert.equal(saved.reservation.status,'MENU_SELECTED');assert.equal(saved.items[0].quantity,4);assert.equal(saved.items[0].note,'Tanpa pedas');assert.equal(saved.pos.status,'SYNCED');
-      assert.equal(requests[0].body.items[0].product_id,'pos-nasi');assert.equal(requests[0].key,first.reservation.code);
+      assert.equal(requests[0].body.items[0].kode_barang,'pos-nasi');assert.equal(requests[0].body.items[0].qty,4);assert.equal(requests[0].body.items[0].catatan,'Tanpa pedas');assert.equal(requests[0].key,first.reservation.code);
       const edited=await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:3,note:'Less sugar'}]}});assert.equal(edited.status,200);
       assert.equal(requests[1].key,requests[0].key);
       saved=(await call(path,{token:first.token})).body;assert.equal(saved.items.length,1);assert.equal(saved.items[0].quantity,3);
@@ -141,7 +142,7 @@ test('booking, authentication, capacity and payment use the database end to end'
         assert.equal((await call(path,{method:'POST',token:first.token,data:{items:[{productId:id,quantity:2}]}})).status,409);
         assert.equal((await call(path,{token:first.token})).body.items[0].quantity,4);
       }finally{Date.now=realNow;}
-    }finally{await new Promise(resolve=>cashier.close(resolve));}
+    }finally{if(previousBase===undefined)delete process.env.POS_BASE_URL;else process.env.POS_BASE_URL=previousBase;await new Promise(resolve=>cashier.close(resolve));}
   });
   await t.test('logout invalidates the server session',async()=>{
     assert.equal((await call('auth/logout',{method:'POST',admin:true,data:{}})).status,200);
