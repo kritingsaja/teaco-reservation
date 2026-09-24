@@ -92,7 +92,7 @@ async function menuFor(db,r) {
   const deadline=menuDeadline(r);
   return {reservation:publicReservation(r),deadline,editable:Date.parse(deadline)>Date.now(),
     products:await db.query('SELECT id,name,category,price FROM menu_products WHERE active=1 ORDER BY category,name'),
-    items:await db.query('SELECT i.product_id,i.quantity,i.note,p.name,p.active FROM reservation_menu_items i JOIN menu_products p ON p.id=i.product_id WHERE i.reservation_id=$1',[r.id]),
+    items:await db.query('SELECT i.product_id,i.quantity,i.note,p.name,p.category,p.price,p.active FROM reservation_menu_items i JOIN menu_products p ON p.id=i.product_id WHERE i.reservation_id=$1',[r.id]),
     pos:(await db.query('SELECT status,draft_id FROM pos_drafts WHERE reservation_id=$1',[r.id]))[0]||null};
 }
 async function saveMenu(db,id,data,{req,admin}={}) {
@@ -362,11 +362,13 @@ export default async function handler(req,res) {
         return send(res,200,{settings:await paymentSettings(db)});
       }
       if(path==='admin/pos-settings'&&method==='PATCH') {
-        const data=await body(req),menuKey=clean(data.menu_key,1000),ordersKey=clean(data.orders_key,1000);
-        if(!menuKey||!ordersKey||/\s/.test(menuKey)||/\s/.test(ordersKey))fail('Isi kode API Menu dan kode API Pesanan dari POS Kasir.');
+        const data=await body(req),updates=[];
+        for(const [field,key,label] of [['menu_key','pos_menu_key','Menu'],['orders_key','pos_orders_key','Pesanan']])if(Object.hasOwn(data,field)){
+          const value=clean(data[field],1000);if(!value||/\s/.test(value))fail(`Kode API ${label} POS Kasir tidak valid.`);updates.push([key,value]);
+        }
+        if(!updates.length)fail('Pilih kode API Menu atau Pesanan yang ingin dihubungkan.');
         await db.transaction(async tx=>{
-          await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',['pos_menu_key',menuKey]);
-          await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',['pos_orders_key',ordersKey]);
+          for(const [key,value] of updates)await tx.query('INSERT INTO settings VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value',[key,value]);
           await audit(tx,admin,null,'POS_API_SETTINGS_UPDATED');
         });
         return send(res,200,{pos:publicPos(await posSettings(db))});

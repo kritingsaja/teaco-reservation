@@ -142,19 +142,30 @@ async function openGuestMenu(){
 function renderGuestMenu(){
   const data=state.guestMenu;$('#guest-menu-context').textContent=dateText(state.booking.visit_date,true)+' · '+state.booking.guest_count+' tamu · '+state.booking.code;
   $('#guest-menu-notice').textContent=data.editable?'Pilih jumlah dan catatan. Batas perubahan: 07.00 WIB hari kunjungan.':'Pilihan menu sudah dikunci. Untuk perubahan, hubungi admin.';
-  const products=data.editable?data.products:data.items.map(item=>({id:item.product_id,name:item.name,category:'Menu tersimpan'}));
+  const products=data.editable?data.products:data.items.map(item=>({id:item.product_id,name:item.name,category:item.category||'Menu tersimpan',price:item.price}));
+  const categories=[...new Set(products.map(p=>p.category||'Lainnya'))].sort((a,b)=>a.localeCompare(b,'id'));
+  $('#guest-menu-tools').hidden=!data.editable;
+  $('#guest-menu-category').innerHTML='<option value="">Semua kategori</option>'+categories.map(category=>`<option value="${escape(category)}">${escape(category)}</option>`).join('');
   $('#guest-menu-list').innerHTML=products.length?products.map((p,i)=>{
     const item=data.items.find(item=>item.product_id===p.id),qty=item?.quantity||0;
-    return `<article class="panel guest-menu-card"><div class="guest-menu-title"><label for="guest-qty-${i}"><strong>${escape(p.name)}</strong><small>${escape(p.category)}${p.price!==undefined?' · '+money(p.price):''}</small></label><div><label class="quantity-label" for="guest-qty-${i}">Jumlah</label><input id="guest-qty-${i}" data-guest-product="${escape(p.id)}" type="number" inputmode="numeric" min="0" max="100" step="1" value="${qty}" ${data.editable?'':'disabled'} /></div></div><label class="guest-note-label" for="guest-note-${i}">Catatan <span class="optional">opsional</span></label><textarea id="guest-note-${i}" data-guest-note="${escape(p.id)}" rows="2" maxlength="300" placeholder="Pedas, less sugar, alergi…" ${data.editable?'':'disabled'}>${escape(item?.note||'')}</textarea></article>`;
+    return `<article class="panel guest-menu-card" data-menu-card data-category="${escape(p.category||'Lainnya')}" data-name="${escape(p.name.toLocaleLowerCase('id'))}"><div class="guest-menu-title"><label for="guest-qty-${i}"><strong>${escape(p.name)}</strong><small>${escape(p.category||'Lainnya')}${p.price!==undefined?' · '+money(p.price):''}</small></label><div><label class="quantity-label" for="guest-qty-${i}">Jumlah</label><input id="guest-qty-${i}" data-guest-product="${escape(p.id)}" data-name="${escape(p.name)}" data-price="${Number(p.price)||0}" type="number" inputmode="numeric" min="0" max="100" step="1" value="${qty}" ${data.editable?'':'disabled'} /></div></div><label class="guest-note-label" for="guest-note-${i}">Catatan <span class="optional">opsional</span></label><textarea id="guest-note-${i}" data-guest-note="${escape(p.id)}" rows="2" maxlength="300" placeholder="Pedas, less sugar, alergi…" ${data.editable?'':'disabled'}>${escape(item?.note||'')}</textarea></article>`;
   }).join(''):empty(data.editable?'Menu belum tersedia':'Belum ada menu tersimpan',data.editable?'Admin perlu menyinkronkan menu dari kasir. Tidak ada menu otomatis.':'Hubungi admin untuk melengkapi menu.','list');
   const inactive=data.editable&&data.items.some(item=>!Number(item.active));
   $('#guest-menu-error').textContent=inactive?'Ada menu lama yang tidak tersedia lagi. Periksa dan pilih penggantinya sebelum menyimpan.':'';
   $$('#guest-menu-list [data-guest-product]').forEach(input=>input.addEventListener('input',updateGuestMenuSummary));
+  $('#guest-menu-search').value='';$('#guest-menu-search').addEventListener('input',filterGuestMenu);
+  $('#guest-menu-category').value='';$('#guest-menu-category').addEventListener('change',filterGuestMenu);
+  filterGuestMenu();
   updateGuestMenuSummary();
 }
+function filterGuestMenu(){
+  const query=$('#guest-menu-search').value.trim().toLocaleLowerCase('id'),category=$('#guest-menu-category').value;
+  $$('[data-menu-card]').forEach(card=>{card.hidden=!(card.dataset.name.includes(query)&&(!category||card.dataset.category===category));});
+}
 function updateGuestMenuSummary(){
-  const inputs=$$('#guest-menu-list [data-guest-product]'),count=inputs.reduce((s,input)=>s+Math.max(0,Number(input.value)||0),0);
-  $('#guest-menu-count').textContent=count+' item';$('#guest-menu-total').textContent='Jumlah pesanan untuk '+state.booking.guest_count+' tamu';
+  const inputs=$$('#guest-menu-list [data-guest-product]'),selected=inputs.filter(input=>Number(input.value)>0),count=selected.reduce((s,input)=>s+Number(input.value),0),total=selected.reduce((s,input)=>s+(Number(input.dataset.price)||0)*Number(input.value),0);
+  $('#guest-menu-count').textContent=count+' item';$('#guest-menu-party').textContent='Untuk '+state.booking.guest_count+' tamu · '+money(total);$('#guest-cart-count').textContent=count+' item';$('#guest-menu-total').textContent=money(total);
+  $('#guest-cart-items').innerHTML=selected.length?selected.map(input=>`<div class="guest-cart-row"><span>${escape(input.dataset.name)} <small>× ${Number(input.value)}</small></span><strong>${money((Number(input.dataset.price)||0)*Number(input.value))}</strong></div>`).join(''):'<p class="guest-cart-empty">Menu yang dipilih akan tampil di sini.</p>';
   $('#save-guest-menu').hidden=!state.guestMenu.editable;$('#save-guest-menu').disabled=!state.guestMenu.editable||count<1||inputs.some(input=>!input.validity.valid);
 }
 $('#open-guest-menu').addEventListener('click',()=>busy($('#open-guest-menu'),openGuestMenu));
@@ -205,8 +216,9 @@ function renderAdmin(){
   $('#menu-source').textContent=data.menu.length?`${data.menu.length} produk tersinkron`:'Belum ada menu tersinkron';$('#sync-menu').disabled=!pos.menuConfigured;
   $('#menu-integration-note').textContent=pos.menuConfigured?(pos.draftConfigured?'Menu final siap dikirim sebagai draft POS Kasir.':'Kode API Pesanan POS Kasir belum dihubungkan.'):'Hubungkan dua kode API dari POS Kasir melalui tombol “Atur API kasir”.';
   for(const key of ['bank_name','account_number','account_holder'])$('#settings-form').elements[key].value=data.settings[key]||'';
-  $('#pos-settings-form').reset();
-  $('#pos-token-note').textContent=pos.menuConfigured&&pos.draftConfigured?'POS Kasir sudah terhubung. Isi kedua kode hanya jika ingin mengganti key.':'Kode tidak ditampilkan kembali setelah disimpan. Buat key melalui POS Kasir → Akses API.';
+  $('#pos-menu-form').reset();$('#pos-orders-form').reset();
+  $('#pos-menu-status').textContent=pos.menuConfigured?'Terhubung':'Belum terhubung';$('#pos-menu-status').classList.toggle('connected',!!pos.menuConfigured);
+  $('#pos-orders-status').textContent=pos.draftConfigured?'Terhubung':'Belum terhubung';$('#pos-orders-status').classList.toggle('connected',!!pos.draftConfigured);
   $('#data-status').innerHTML=`<div class="storage-badge">${icon('database')}${data.storage==='turso'?'Turso · SQLite online':'SQLite · database pengujian lokal'}</div><p class="muted">${data.storage==='turso'?'Data tersimpan di Turso dan digunakan bersama oleh semua perangkat.':'Data tersimpan di file .data/teaco.sqlite pada komputer ini. Versi Vercel memerlukan koneksi Turso tersendiri.'}</p>`;
   setAdminTab(state.tab);
 }
@@ -224,8 +236,9 @@ function renderReservationList(){const q=$('#reservation-search').value.toLowerC
 $('#dashboard-date').addEventListener('change',renderStats);['reservation-search','reservation-status','reservation-date'].forEach(id=>$('#'+id).addEventListener(id==='reservation-search'?'input':'change',renderReservationList));
 $('#refresh-admin').addEventListener('click',()=>busy($('#refresh-admin'),async()=>{try{await loadAdmin();toast('Data diperbarui.');}catch(error){if(error.status===401)await openAdmin();else toast(error.message);}}));
 $('#settings-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{await request('admin/settings',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});await loadAdmin();await loadCalendar();toast('Rekening DP disimpan.');}catch(error){toast(error.message);}});});
-$('#open-pos-settings').addEventListener('click',()=>{setAdminTab('settings');requestAnimationFrame(()=>$('#pos-settings-form').scrollIntoView({behavior:'smooth',block:'start'}));});
-$('#pos-settings-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{await request('admin/pos-settings',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});await loadAdmin();toast('Koneksi API kasir disimpan.');}catch(error){toast(error.message);}});});
+$('#open-pos-settings').addEventListener('click',()=>{setAdminTab('settings');requestAnimationFrame(()=>$('#pos-settings-group').scrollIntoView({behavior:'smooth',block:'start'}));});
+$('#pos-menu-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{await request('admin/pos-settings',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});await loadAdmin();toast('API Menu POS Kasir terhubung. Sekarang sinkronkan menu.');}catch(error){toast(error.message);}});});
+$('#pos-orders-form').addEventListener('submit',event=>{event.preventDefault();busy(event.target.querySelector('button[type=submit]'),async()=>{try{await request('admin/pos-settings',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});await loadAdmin();toast('API Draft Pesanan POS Kasir terhubung.');}catch(error){toast(error.message);}});});
 $('#sync-menu').addEventListener('click',()=>busy($('#sync-menu'),async()=>{try{const result=await post('admin/menu/sync',{});await loadAdmin();toast(`${result.count} menu dari kasir disinkronkan.`);}catch(error){toast(error.message);}}));
 function openBookingDetail(id){
   const r=state.admin.reservations.find(r=>r.id===id);if(!r)return;
