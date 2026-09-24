@@ -43,7 +43,7 @@ async function paymentSettings(db) {
 async function posSettings(db) {
   const rows=await db.query("SELECT key,value FROM settings WHERE key IN ('pos_menu_key','pos_orders_key')");
   const saved=Object.fromEntries(rows.map(row=>[row.key,row.value]));
-  const base=clean(process.env.POS_BASE_URL||'https://pos.teacoxplus.cloud',1000).replace(/\/+$/,'');
+  const base=clean(process.env.POS_BASE_URL||'https://kasir.teacocafe.my.id',1000).replace(/\/+$/,'');
   let origin;try{origin=new URL(base).origin;}catch{fail('Alamat layanan POS belum valid.',503);}
   if(!localMode()&&new URL(origin).protocol!=='https:')fail('Layanan POS harus menggunakan HTTPS.',503);
   const menu_key=saved.pos_menu_key||process.env.POS_MENU_API_KEY||process.env.POS_API_TOKEN||'';
